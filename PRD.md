@@ -68,3 +68,10 @@ General Ideas - to be clustered into a roadmap later.:
 20. What if the user finds something really interesting or has a new idea to work on while they already have an ongoing goal?
 21. How can they still have it without fear of losing it, to make sure priorities stay undisturbed?
 22. Can the user take an item from this list and move it to active goals?
+
+### Product Roadmap
+- MVP (V 1.0.0)
+  - Goals
+  - Tracking (Pomodoro only)
+  - Daily Logging
+- 
