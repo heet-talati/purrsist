@@ -11,3 +11,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Personal working notes (not part of the shipped project)
+notes/
