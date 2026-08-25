@@ -26,6 +26,13 @@ All commands go through `uv` (this project uses a uv-managed environment, not an
 
 `PRD.md` is the source of truth for product scope (problem statement, MVP user stories, open product questions). Work is tracked as GitHub Issues in `heet-talati/purrsist` (`gh issue list --repo heet-talati/purrsist`) — check there before assuming what's in scope for a given feature.
 
+## Working conventions
+
+- GitHub flow: short-lived branches off `main`, no `type/name` prefixes — plain descriptive names (e.g. `add-goal-command`, not `feat/add-goal-command`). Branch → commit → push → PR → CI → merge → delete branch.
+- Never create, rename, delete, merge, or push a branch without being explicitly told to take that specific action. A broader instruction ("set X up", "clean this up") authorizes the work itself, not the git operations around it.
+- Show the diff and get explicit approval before every `git commit`.
+- Before referencing a third-party GitHub Action version (`uses: owner/action@vX`), check that action's actual tags/releases page — don't assume it follows the same floating-major-tag convention as a different action.
+
 ## CI/CD
 
 - `.github/workflows/ci.yml` runs `scripts/check.py` on every push to `main` and every pull request.
