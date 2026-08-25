@@ -1,5 +1,4 @@
-# import pytest
-from src.purrsist import exit_message, welcome_message
+from purrsist import exit_message, welcome_message
 
 
 def test_initialization(capsys):
