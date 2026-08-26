@@ -1,6 +1,6 @@
 from importlib.metadata import version
 
-from commands import goals
+from commands import goals, tracking
 
 from .output import print_cli
 
@@ -90,6 +90,11 @@ COMMANDS = {
         "description": "Manage your goals",
         "options": {},
         "handler": goals.handle,
+    },
+    "track": {
+        "description": "Track time against a goal with a timer",
+        "options": {},
+        "handler": tracking.handle,
     },
 }
 
