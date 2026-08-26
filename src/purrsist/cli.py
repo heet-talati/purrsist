@@ -1,5 +1,9 @@
 from importlib.metadata import version
 
+from commands import goals
+
+from .output import print_cli
+
 # Global Variables
 APP_VERSION = version("purrsist")
 
@@ -30,10 +34,6 @@ def query_input():
             options[i] = options[i].strip()
 
     return command, options
-
-
-def print_cli(str, padding=1):
-    print("  " * padding + str)
 
 
 # All space seperated options are currently valid, this function will validate options in future
@@ -85,6 +85,11 @@ COMMANDS = {
         "description": "Show the current version of the program",
         "options": {},
         "handler": show_version,
+    },
+    "goal": {
+        "description": "Manage your goals",
+        "options": {},
+        "handler": goals.handle,
     },
 }
 
