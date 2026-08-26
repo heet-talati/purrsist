@@ -383,10 +383,18 @@ def _handle_start(options: list[str]) -> None:
         )
     else:
         completed = complete_session(session_id)
-        print_cli(
-            f"✓ Session complete for '{completed.goal_name}' — "
-            f"{actual_str} focused (planned {planned_str})"
-        )
+        _print_completion_banner(completed.goal_name, actual_str, planned_str)
+
+
+def _print_completion_banner(goal_name: str, actual_str: str, planned_str: str) -> None:
+    """Bell + bordered banner on natural completion, distinct from the
+    early-stop summary line, so it's noticeable even away from the screen."""
+    print("\a", end="", flush=True)
+    border = "=" * 50
+    print_cli(border, 0)
+    print_cli(f"\U0001f514 TIME'S UP! Session complete for '{goal_name}'", 0)
+    print_cli(f"{actual_str} focused (planned {planned_str})", 0)
+    print_cli(border, 0)
 
 
 def _handle_help(options: list[str]) -> None:

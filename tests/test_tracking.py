@@ -331,11 +331,33 @@ def test_handle_start_runs_countdown_to_completion(monkeypatch, capsys, tmp_path
     captured = capsys.readouterr()
     assert "Tracking 'Learn Rust'" in captured.out
     assert "Session complete for 'Learn Rust'" in captured.out
+    assert "\a" in captured.out  # terminal bell on natural completion
+    assert "TIME'S UP" in captured.out
 
     conn = sqlite3.connect(db_path)
     status = conn.execute("SELECT status FROM sessions").fetchone()[0]
     conn.close()
     assert status == "completed"
+
+
+def test_handle_start_ctrl_c_has_no_bell_or_completion_banner(
+    monkeypatch, capsys, tmp_path
+):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+
+    def _raise(_):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(tracking.time, "sleep", _raise)
+    monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    tracking.handle(["start", "Learn", "Rust", "25"])
+
+    captured = capsys.readouterr()
+    assert "\a" not in captured.out
+    assert "TIME'S UP" not in captured.out
 
 
 def test_handle_start_ctrl_c_cancels_session(monkeypatch, capsys, tmp_path):
