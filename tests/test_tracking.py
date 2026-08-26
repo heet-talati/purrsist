@@ -30,6 +30,15 @@ def test_start_session_creates_row(tmp_path):
     assert row == (25, "running")
 
 
+def test_start_session_normalizes_goal_name_case(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path, name="Learn Rust")
+
+    session = tracking.start_session("LEARN rust", 25, db_path=db_path)
+
+    assert session.goal_name == "Learn Rust"
+
+
 def test_start_session_rejects_empty_name(tmp_path):
     db_path = tmp_path / "test.db"
     with pytest.raises(tracking.TrackError):
@@ -109,7 +118,7 @@ def test_run_countdown_ticks_down_to_zero():
     sleeps = []
     writes = []
 
-    total_paused = tracking.run_countdown(
+    outcome = tracking.run_countdown(
         session,
         sleep_fn=sleeps.append,
         write_fn=writes.append,
@@ -120,7 +129,9 @@ def test_run_countdown_ticks_down_to_zero():
     assert len(writes) == 4  # 3 ticks + final clear line
     assert "00:03" in writes[0]
     assert "00:01" in writes[2]
-    assert total_paused == 0
+    assert outcome.stopped_early is False
+    assert outcome.remaining_seconds == 0
+    assert outcome.total_paused_seconds == 0
 
 
 def test_run_countdown_pause_then_resume_accumulates_paused_seconds():
@@ -131,7 +142,7 @@ def test_run_countdown_pause_then_resume_accumulates_paused_seconds():
     pauses = []
     resumes = []
 
-    total_paused = tracking.run_countdown(
+    outcome = tracking.run_countdown(
         session,
         sleep_fn=lambda _: None,
         write_fn=lambda _: None,
@@ -140,9 +151,45 @@ def test_run_countdown_pause_then_resume_accumulates_paused_seconds():
         on_resume=lambda delta: resumes.append(delta),
     )
 
-    assert total_paused == 2
+    assert outcome.total_paused_seconds == 2
+    assert outcome.stopped_early is False
     assert pauses == [True]
     assert resumes == [2]
+
+
+def test_run_countdown_quit_key_stops_early():
+    session = tracking.Session(
+        goal_id=1, goal_name="Learn Rust", planned_minutes=0.05, started_at="now"
+    )
+    keys = iter(["q"])
+
+    outcome = tracking.run_countdown(
+        session,
+        sleep_fn=lambda _: None,
+        write_fn=lambda _: None,
+        poll_keypress_fn=lambda: next(keys),
+    )
+
+    assert outcome.stopped_early is True
+    assert outcome.remaining_seconds == 3  # nothing ticked yet
+    assert outcome.total_paused_seconds == 0
+
+
+def test_run_countdown_quit_key_while_paused_counts_segment_as_paused():
+    session = tracking.Session(
+        goal_id=1, goal_name="Learn Rust", planned_minutes=0.05, started_at="now"
+    )
+    keys = iter(["p", "q"])
+
+    outcome = tracking.run_countdown(
+        session,
+        sleep_fn=lambda _: None,
+        write_fn=lambda _: None,
+        poll_keypress_fn=lambda: next(keys),
+    )
+
+    assert outcome.stopped_early is True
+    assert outcome.total_paused_seconds == 1
 
 
 def test_run_countdown_pads_shorter_line_to_clear_previous_longer_one():
@@ -306,6 +353,30 @@ def test_handle_start_ctrl_c_cancels_session(monkeypatch, capsys, tmp_path):
 
     captured = capsys.readouterr()
     assert "Stopped 'Learn Rust' early" in captured.out
+
+    conn = sqlite3.connect(db_path)
+    status = conn.execute("SELECT status FROM sessions").fetchone()[0]
+    conn.close()
+    assert status == "cancelled"
+
+
+def test_handle_start_quit_key_cancels_session_with_summary(
+    monkeypatch, capsys, tmp_path
+):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+
+    keys = iter(["q"])
+    monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: next(keys))
+    monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+
+    tracking.handle(["start", "Learn", "Rust", "0.05"])
+
+    captured = capsys.readouterr()
+    assert "Stopped 'Learn Rust' early" in captured.out
+    assert "focused (planned 00:03)" in captured.out
 
     conn = sqlite3.connect(db_path)
     status = conn.execute("SELECT status FROM sessions").fetchone()[0]

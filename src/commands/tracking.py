@@ -97,16 +97,16 @@ def start_session(
     conn = _connect(db_path)
     try:
         row = conn.execute(
-            "SELECT id, active FROM goals WHERE name = ? COLLATE NOCASE",
+            "SELECT id, name, active FROM goals WHERE name = ? COLLATE NOCASE",
             (goal_name,),
         ).fetchone()
         if row is None:
             raise TrackError(f"No goal named '{goal_name}' found.")
-        goal_id, active = row
+        goal_id, stored_name, active = row
         if not active:
             raise TrackError(
-                f"'{goal_name}' is not active. "
-                f"Activate it first with 'goal priority {goal_name}'."
+                f"'{stored_name}' is not active. "
+                f"Activate it first with 'goal priority {stored_name}'."
             )
 
         started_at = datetime.now(UTC).isoformat()
@@ -122,7 +122,7 @@ def start_session(
     return Session(
         id=cursor.lastrowid,
         goal_id=goal_id,
-        goal_name=goal_name,
+        goal_name=stored_name,
         planned_minutes=planned_minutes,
         started_at=started_at,
     )
@@ -239,6 +239,13 @@ def _default_write(line: str) -> None:
 
 
 PAUSE_KEY = "p"
+QUIT_KEY = "q"
+
+
+class CountdownOutcome(NamedTuple):
+    stopped_early: bool
+    remaining_seconds: int
+    total_paused_seconds: int
 
 
 def run_countdown(
@@ -248,8 +255,8 @@ def run_countdown(
     poll_keypress_fn: Callable[[], str | None] | None = None,
     on_pause: Callable[[], None] | None = None,
     on_resume: Callable[[int], None] | None = None,
-) -> int:
-    """Run the countdown to completion; returns total seconds spent paused.
+) -> CountdownOutcome:
+    """Run the countdown to completion or an early stop.
 
     All callables are resolved at call time (not bound as defaults) so
     tests can monkeypatch `tracking.time.sleep` etc. and have it take
@@ -266,6 +273,7 @@ def run_countdown(
     paused = False
     segment_paused = 0
     total_paused = 0
+    stopped_early = False
     last_len = 0
 
     def _write_line(content: str) -> None:
@@ -273,31 +281,50 @@ def run_countdown(
         write_fn("\r" + content.ljust(last_len))
         last_len = len(content)
 
-    while remaining > 0:
-        if poll_keypress_fn() == PAUSE_KEY:
-            paused = not paused
-            if paused:
-                segment_paused = 0
-                on_pause()
-            else:
-                on_resume(segment_paused)
-                total_paused += segment_paused
+    try:
+        while remaining > 0:
+            key = poll_keypress_fn()
+            if key == QUIT_KEY:
+                stopped_early = True
+                break
+            if key == PAUSE_KEY:
+                paused = not paused
+                if paused:
+                    segment_paused = 0
+                    on_pause()
+                else:
+                    on_resume(segment_paused)
+                    total_paused += segment_paused
 
-        if paused:
+            if paused:
+                _write_line(
+                    f"  PAUSED — {session.goal_name} "
+                    f"({_format_remaining(remaining)} left, press 'p' to resume, "
+                    f"'q' to stop)"
+                )
+                sleep_fn(TICK_SECONDS)
+                segment_paused += TICK_SECONDS
+                continue
+
             _write_line(
-                f"  PAUSED — {session.goal_name} "
-                f"({_format_remaining(remaining)} left, press 'p' to resume)"
+                f"  {_format_remaining(remaining)} remaining — {session.goal_name}"
             )
             sleep_fn(TICK_SECONDS)
-            segment_paused += TICK_SECONDS
-            continue
+            remaining -= TICK_SECONDS
+    except KeyboardInterrupt:
+        stopped_early = True
 
-        _write_line(f"  {_format_remaining(remaining)} remaining — {session.goal_name}")
-        sleep_fn(TICK_SECONDS)
-        remaining -= TICK_SECONDS
+    if paused:
+        # Quit while paused: the in-progress pause segment never got folded
+        # into total_paused via on_resume, so fold it in now.
+        total_paused += segment_paused
 
     write_fn("\r" + " " * last_len + "\r")
-    return total_paused
+    return CountdownOutcome(
+        stopped_early=stopped_early,
+        remaining_seconds=remaining,
+        total_paused_seconds=total_paused,
+    )
 
 
 def _parse_start_args(options: list[str]) -> tuple[str, float]:
@@ -336,18 +363,30 @@ def _handle_start(options: list[str]) -> None:
 
     print_cli(
         f"▶ Tracking '{session.goal_name}' for {minutes:g} min. "
-        f"Press '{PAUSE_KEY}' to pause, Ctrl+C to stop early."
+        f"Press '{PAUSE_KEY}' to pause, '{QUIT_KEY}' to stop early "
+        f"(Ctrl+C also works)."
     )
-    try:
-        run_countdown(session, on_pause=_on_pause, on_resume=_on_resume)
-    except KeyboardInterrupt:
-        print()
-        cancelled = cancel_session(session_id)
-        print_cli(f"■ Stopped '{cancelled.goal_name}' early.")
-        return
+    outcome = run_countdown(session, on_pause=_on_pause, on_resume=_on_resume)
 
-    completed = complete_session(session_id)
-    print_cli(f"✓ Session complete for '{completed.goal_name}' ({minutes:g} min)")
+    planned_seconds = round(minutes * 60)
+    actual_seconds = (
+        planned_seconds - outcome.remaining_seconds - outcome.total_paused_seconds
+    )
+    actual_str = _format_remaining(actual_seconds)
+    planned_str = _format_remaining(planned_seconds)
+
+    if outcome.stopped_early:
+        cancelled = cancel_session(session_id)
+        print_cli(
+            f"■ Stopped '{cancelled.goal_name}' early — "
+            f"{actual_str} focused (planned {planned_str})"
+        )
+    else:
+        completed = complete_session(session_id)
+        print_cli(
+            f"✓ Session complete for '{completed.goal_name}' — "
+            f"{actual_str} focused (planned {planned_str})"
+        )
 
 
 def _handle_help(options: list[str]) -> None:
