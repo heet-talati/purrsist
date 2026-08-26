@@ -109,12 +109,116 @@ def test_run_countdown_ticks_down_to_zero():
     sleeps = []
     writes = []
 
-    tracking.run_countdown(session, sleep_fn=sleeps.append, write_fn=writes.append)
+    total_paused = tracking.run_countdown(
+        session,
+        sleep_fn=sleeps.append,
+        write_fn=writes.append,
+        poll_keypress_fn=lambda: None,
+    )
 
     assert sleeps == [1, 1, 1]
     assert len(writes) == 4  # 3 ticks + final clear line
     assert "00:03" in writes[0]
     assert "00:01" in writes[2]
+    assert total_paused == 0
+
+
+def test_run_countdown_pause_then_resume_accumulates_paused_seconds():
+    session = tracking.Session(
+        goal_id=1, goal_name="Learn Rust", planned_minutes=0.05, started_at="now"
+    )
+    keys = iter(["p", None, "p", None, None])
+    pauses = []
+    resumes = []
+
+    total_paused = tracking.run_countdown(
+        session,
+        sleep_fn=lambda _: None,
+        write_fn=lambda _: None,
+        poll_keypress_fn=lambda: next(keys),
+        on_pause=lambda: pauses.append(True),
+        on_resume=lambda delta: resumes.append(delta),
+    )
+
+    assert total_paused == 2
+    assert pauses == [True]
+    assert resumes == [2]
+
+
+def test_run_countdown_pads_shorter_line_to_clear_previous_longer_one():
+    # The "PAUSED ... press 'p' to resume" line is longer than the plain
+    # countdown line -- a bare "\r" doesn't erase leftover characters, so
+    # the line after a resume must be padded to at least the previous
+    # line's length or stale text lingers on screen.
+    session = tracking.Session(
+        goal_id=1, goal_name="X", planned_minutes=0.05, started_at="now"
+    )
+    keys = iter(["p", "p", None, None, None])
+    writes = []
+
+    tracking.run_countdown(
+        session,
+        sleep_fn=lambda _: None,
+        write_fn=writes.append,
+        poll_keypress_fn=lambda: next(keys),
+    )
+
+    paused_line, resumed_line = writes[0], writes[1]
+    assert "PAUSED" in paused_line
+    assert len(resumed_line) - 1 == len(paused_line) - 1  # both minus leading \r
+
+
+def test_pause_session_marks_paused(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+
+    paused = tracking.pause_session(session.id, db_path=db_path)
+    assert paused.status == "paused"
+
+
+def test_pause_session_rejects_not_running(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.pause_session(session.id, db_path=db_path)
+
+    with pytest.raises(tracking.TrackError):
+        tracking.pause_session(session.id, db_path=db_path)
+
+
+def test_resume_session_restores_running_and_accumulates_paused(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.pause_session(session.id, db_path=db_path)
+
+    resumed = tracking.resume_session(session.id, 5, db_path=db_path)
+    assert resumed.status == "running"
+    assert resumed.paused_seconds == 5
+
+    tracking.pause_session(session.id, db_path=db_path)
+    resumed_again = tracking.resume_session(session.id, 3, db_path=db_path)
+    assert resumed_again.paused_seconds == 8
+
+
+def test_resume_session_rejects_not_paused(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+
+    with pytest.raises(tracking.TrackError):
+        tracking.resume_session(session.id, 5, db_path=db_path)
+
+
+def test_cancel_session_from_paused_state(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.pause_session(session.id, db_path=db_path)
+
+    cancelled = tracking.cancel_session(session.id, db_path=db_path)
+    assert cancelled.status == "cancelled"
 
 
 def test_parse_start_args_defaults_minutes():
@@ -174,6 +278,7 @@ def test_handle_start_runs_countdown_to_completion(monkeypatch, capsys, tmp_path
     _add_active_goal(db_path)
 
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+    monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
     tracking.handle(["start", "Learn", "Rust", "0.02"])
 
     captured = capsys.readouterr()
@@ -196,6 +301,7 @@ def test_handle_start_ctrl_c_cancels_session(monkeypatch, capsys, tmp_path):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(tracking.time, "sleep", _raise)
+    monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
     tracking.handle(["start", "Learn", "Rust", "25"])
 
     captured = capsys.readouterr()
@@ -205,3 +311,27 @@ def test_handle_start_ctrl_c_cancels_session(monkeypatch, capsys, tmp_path):
     status = conn.execute("SELECT status FROM sessions").fetchone()[0]
     conn.close()
     assert status == "cancelled"
+
+
+def test_handle_start_pause_then_resume_completes(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+
+    keys = iter(["p", "p", None, None, None])
+    monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: next(keys))
+    monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+
+    tracking.handle(["start", "Learn", "Rust", "0.05"])
+
+    captured = capsys.readouterr()
+    assert "Session complete for 'Learn Rust'" in captured.out
+
+    conn = sqlite3.connect(db_path)
+    status, paused_seconds = conn.execute(
+        "SELECT status, paused_seconds FROM sessions"
+    ).fetchone()
+    conn.close()
+    assert status == "completed"
+    assert paused_seconds == 1

@@ -1,4 +1,5 @@
 import sqlite3
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -8,6 +9,31 @@ from typing import NamedTuple
 
 from commands import db
 from purrsist.output import print_cli
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _default_poll_keypress() -> str | None:
+        if msvcrt.kbhit():
+            return msvcrt.getch().decode(errors="ignore").lower()
+        return None
+else:
+    import select
+    import termios
+    import tty
+
+    def _default_poll_keypress() -> str | None:
+        if not sys.stdin.isatty():
+            return None
+        old_settings = termios.tcgetattr(sys.stdin)
+        try:
+            tty.setcbreak(sys.stdin.fileno())
+            ready, _, _ = select.select([sys.stdin], [], [], 0)
+            if not ready:
+                return None
+            return sys.stdin.read(1).lower()
+        finally:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
 
 
 class TrackError(ValueError):
@@ -133,10 +159,60 @@ def complete_session(session_id: int, db_path: Path | None = None) -> Session:
     return session
 
 
-def cancel_session(session_id: int, db_path: Path | None = None) -> Session:
+def pause_session(session_id: int, db_path: Path | None = None) -> Session:
     conn = _connect(db_path)
     try:
         row = _get_running_session(conn, session_id)
+        conn.execute(
+            "UPDATE sessions SET status = 'paused' WHERE id = ?", (session_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    session = _row_to_session(row)
+    session.status = "paused"
+    return session
+
+
+def resume_session(
+    session_id: int, paused_seconds_delta: int, db_path: Path | None = None
+) -> Session:
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            f"{_SESSION_SELECT} WHERE sessions.id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            raise TrackError(f"No session with id {session_id}.")
+        if row[7] != "paused":
+            raise TrackError(f"Session {session_id} is not paused (status: {row[7]}).")
+
+        new_paused_seconds = row[6] + paused_seconds_delta
+        conn.execute(
+            "UPDATE sessions SET status = 'running', paused_seconds = ? WHERE id = ?",
+            (new_paused_seconds, session_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    session = _row_to_session(row)
+    session.status = "running"
+    session.paused_seconds = new_paused_seconds
+    return session
+
+
+def cancel_session(session_id: int, db_path: Path | None = None) -> Session:
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            f"{_SESSION_SELECT} WHERE sessions.id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            raise TrackError(f"No session with id {session_id}.")
+        if row[7] not in ("running", "paused"):
+            raise TrackError(f"Session {session_id} is not active (status: {row[7]}).")
 
         ended_at = datetime.now(UTC).isoformat()
         conn.execute(
@@ -162,25 +238,66 @@ def _default_write(line: str) -> None:
     print(line, end="", flush=True)
 
 
+PAUSE_KEY = "p"
+
+
 def run_countdown(
     session: Session,
     sleep_fn: Callable[[float], None] | None = None,
     write_fn: Callable[[str], None] | None = None,
-) -> None:
-    # Resolved at call time (not bound as a default) so tests can
-    # monkeypatch `tracking.time.sleep` and have it take effect here.
+    poll_keypress_fn: Callable[[], str | None] | None = None,
+    on_pause: Callable[[], None] | None = None,
+    on_resume: Callable[[int], None] | None = None,
+) -> int:
+    """Run the countdown to completion; returns total seconds spent paused.
+
+    All callables are resolved at call time (not bound as defaults) so
+    tests can monkeypatch `tracking.time.sleep` etc. and have it take
+    effect here.
+    """
     sleep_fn = sleep_fn or time.sleep
     write_fn = write_fn or _default_write
+    poll_keypress_fn = poll_keypress_fn or _default_poll_keypress
+    on_pause = on_pause or (lambda: None)
+    on_resume = on_resume or (lambda _delta: None)
 
     total_seconds = round(session.planned_minutes * 60)
     remaining = total_seconds
+    paused = False
+    segment_paused = 0
+    total_paused = 0
+    last_len = 0
+
+    def _write_line(content: str) -> None:
+        nonlocal last_len
+        write_fn("\r" + content.ljust(last_len))
+        last_len = len(content)
+
     while remaining > 0:
-        write_fn(
-            f"\r  {_format_remaining(remaining)} remaining — {session.goal_name}  "
-        )
+        if poll_keypress_fn() == PAUSE_KEY:
+            paused = not paused
+            if paused:
+                segment_paused = 0
+                on_pause()
+            else:
+                on_resume(segment_paused)
+                total_paused += segment_paused
+
+        if paused:
+            _write_line(
+                f"  PAUSED — {session.goal_name} "
+                f"({_format_remaining(remaining)} left, press 'p' to resume)"
+            )
+            sleep_fn(TICK_SECONDS)
+            segment_paused += TICK_SECONDS
+            continue
+
+        _write_line(f"  {_format_remaining(remaining)} remaining — {session.goal_name}")
         sleep_fn(TICK_SECONDS)
         remaining -= TICK_SECONDS
-    write_fn("\r" + " " * 60 + "\r")
+
+    write_fn("\r" + " " * last_len + "\r")
+    return total_paused
 
 
 def _parse_start_args(options: list[str]) -> tuple[str, float]:
@@ -209,19 +326,27 @@ def _handle_start(options: list[str]) -> None:
         print_cli(f"[error] {exc}")
         return
     assert session.id is not None  # always set by start_session's INSERT
+    session_id: int = session.id
+
+    def _on_pause() -> None:
+        pause_session(session_id)
+
+    def _on_resume(delta: int) -> None:
+        resume_session(session_id, delta)
 
     print_cli(
-        f"▶ Tracking '{session.goal_name}' for {minutes:g} min. Press Ctrl+C to stop early."
+        f"▶ Tracking '{session.goal_name}' for {minutes:g} min. "
+        f"Press '{PAUSE_KEY}' to pause, Ctrl+C to stop early."
     )
     try:
-        run_countdown(session)
+        run_countdown(session, on_pause=_on_pause, on_resume=_on_resume)
     except KeyboardInterrupt:
         print()
-        cancelled = cancel_session(session.id)
+        cancelled = cancel_session(session_id)
         print_cli(f"■ Stopped '{cancelled.goal_name}' early.")
         return
 
-    completed = complete_session(session.id)
+    completed = complete_session(session_id)
     print_cli(f"✓ Session complete for '{completed.goal_name}' ({minutes:g} min)")
 
 
