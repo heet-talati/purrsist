@@ -18,7 +18,8 @@ All commands go through `uv` (this project uses a uv-managed environment, not an
 ## Architecture
 
 - `src/purrsist/` is the installed package (editable install via `uv`). `cli.py` holds the entire CLI surface: the `COMMANDS` dict (source of `help` text), input parsing (`query_input`), output helpers (`print_cli`), and the `repl()` main loop, which dispatches on command name via `match/case`. Add a new top-level command by adding an entry to `COMMANDS` and a case to the `match` block in `repl()`.
-- `src/commands/` is a second, sibling top-level package (not a subpackage of `purrsist`) intended for feature-specific command modules — currently only `goals.py`, unimplemented. It has no `__init__.py`; it's picked up today only via setuptools' automatic namespace-package discovery plus `uv`'s editable install path. This is an open architectural question (whether Goals code should live here vs. under `src/purrsist/commands/`), not a settled convention to extend without reconsidering.
+- `src/commands/` is a second, sibling top-level package (not a subpackage of `purrsist`), explicitly declared in `pyproject.toml` (`[tool.setuptools.packages.find]`) rather than relying on implicit namespace-package discovery. It holds feature-specific command modules — `goals.py` so far (SQLite-backed, `add` implemented) — and each module exposes a `handle(options)` entry point that gets registered into `cli.py`'s `COMMANDS` dict. `purrsist/output.py` holds `print_cli` specifically so `commands/*` modules can import it without a circular import against `purrsist/cli.py` (which imports `commands.*` to register handlers).
+- Goals data lives in a local SQLite database at `~/.purrsist/purrsist.db` (not JSON, not cloud-synced) — one file, meant to eventually hold Tracking/Logging tables too, not just Goals.
 - `__main__.py` is the entry point (`python -m purrsist`): prints the welcome banner, then calls `repl()`.
 - Tests import the installed package directly (`from purrsist import ...`), not via `src.` — a bare `pytest`/`uv run pytest` only resolves `src.`-prefixed imports correctly under `python -m pytest` invocation, so importing the installed package is what makes the suite invocation-independent.
 
@@ -32,6 +33,8 @@ All commands go through `uv` (this project uses a uv-managed environment, not an
 - Never create, rename, delete, merge, or push a branch without being explicitly told to take that specific action. A broader instruction ("set X up", "clean this up") authorizes the work itself, not the git operations around it.
 - Show the diff and get explicit approval before every `git commit`.
 - Before referencing a third-party GitHub Action version (`uses: owner/action@vX`), check that action's actual tags/releases page — don't assume it follows the same floating-major-tag convention as a different action.
+- This is a Windows environment: prefer PowerShell commands over POSIX/bash ones when running shell commands. (Bash/git-bash is fine for git plumbing that behaves identically either way, but don't default to POSIX syntax.)
+- Always operate through `uv` rather than bare `pip`/global `python`: `uv add <pkg>` / `uv remove <pkg>` for dependencies (not hand-editing `pyproject.toml`'s dependency lists or using `pip install`), `uv run <tool>` for tests/lint/type-check/scripts, `uv sync` to apply environment or packaging-config changes.
 
 ## CI/CD
 

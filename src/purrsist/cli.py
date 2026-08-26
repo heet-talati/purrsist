@@ -1,15 +1,11 @@
 from importlib.metadata import version
 
+from commands import goals
+
+from .output import print_cli
+
 # Global Variables
 APP_VERSION = version("purrsist")
-COMMANDS = {
-    "exit": {"description": "Exit the program", "options": {}},
-    "help": {"description": "List available commands", "options": {}},
-    "version": {
-        "description": "Show the current version of the program",
-        "options": {},
-    },
-}
 
 
 # Command Line Interface (CLI) Functions
@@ -27,6 +23,9 @@ def exit_message():
 
 def query_input():
     query = input("purrsist > ").split()
+    if not query:
+        return "", []
+
     command = query[0].strip()
     options = []
     if len(query) > 1:
@@ -37,10 +36,6 @@ def query_input():
     return command, options
 
 
-def print_cli(str, padding=1):
-    print("  " * padding + str)
-
-
 # All space seperated options are currently valid, this function will validate options in future
 def is_valid_option():
     pass
@@ -48,7 +43,7 @@ def is_valid_option():
 
 def options_handler(options, command):
     # Reject any options passed to the command for now
-    if len(options) > 0:
+    if options:
         print_cli(
             f"[error] The '{command}' command does not take any options. Please try again."
         )
@@ -76,20 +71,47 @@ def show_help(options=None):
                 print_cli(f"-{option}", 3)
 
 
+# Command Registry
+# Maps a command name to its help text and its handler. `exit` has no handler
+# here because repl() breaks out of the loop for it before dispatching.
+COMMANDS = {
+    "exit": {"description": "Exit the program", "options": {}, "handler": None},
+    "help": {
+        "description": "List available commands",
+        "options": {},
+        "handler": show_help,
+    },
+    "version": {
+        "description": "Show the current version of the program",
+        "options": {},
+        "handler": show_version,
+    },
+    "goal": {
+        "description": "Manage your goals",
+        "options": {},
+        "handler": goals.handle,
+    },
+}
+
+
 # Main REPL Loop
 def repl():
-    command, options = query_input()
+    while True:
+        try:
+            command, options = query_input()
+        except KeyboardInterrupt:
+            print()
+            break
 
-    while command != "exit":
-        match command:
-            case "help":
-                show_help(options)
-            case "version":
-                show_version(options)
-            case _:
-                print_cli(
-                    "[error] Please enter a valid command! Use 'help' to see the list of available commands."
-                )
-        command, options = query_input()
+        if command == "exit":
+            break
+
+        entry = COMMANDS.get(command)
+        if entry and entry["handler"]:
+            entry["handler"](options)
+        else:
+            print_cli(
+                "[error] Please enter a valid command! Use 'help' to see the list of available commands."
+            )
 
     exit_message()

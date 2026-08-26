@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"E:\\_TheNewWorld\\purrsist\\.claude\\hooks\\format-python.ps1\"",
+            "shell": "powershell",
+            "timeout": 30,
+            "statusMessage": "Formatting with ruff..."
+          }
+        ]
+      }
+    ]
+  }
+}
