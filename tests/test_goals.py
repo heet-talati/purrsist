@@ -61,6 +61,7 @@ def test_handle_help_lists_subcommands(capsys):
     captured = capsys.readouterr()
     assert "add:" in captured.out
     assert "list:" in captured.out
+    assert "delete:" in captured.out
     assert "help:" in captured.out
 
 
@@ -91,6 +92,54 @@ def test_handle_add_duplicate(monkeypatch, capsys, tmp_path):
     goals.handle(["add", "5", "Learn", "Rust"])
     captured = capsys.readouterr()
     assert "already exists" in captured.out
+
+
+def test_delete_goal_removes_row(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 20, db_path=db_path)
+
+    deleted = goals.delete_goal("Learn Rust", db_path=db_path)
+    assert deleted.id == goal.id
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT id FROM goals WHERE id = ?", (goal.id,)).fetchone()
+    conn.close()
+    assert row is None
+
+
+def test_delete_goal_is_case_insensitive(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    deleted = goals.delete_goal("learn rust", db_path=db_path)
+    assert deleted.name == "Learn Rust"
+
+
+def test_delete_goal_rejects_missing_name(tmp_path):
+    db_path = tmp_path / "test.db"
+    with pytest.raises(goals.GoalError):
+        goals.delete_goal("Nonexistent", db_path=db_path)
+
+
+def test_handle_delete_missing_args(capsys):
+    goals.handle(["delete"])
+    captured = capsys.readouterr()
+    assert "[error] Usage: goal delete" in captured.out
+
+
+def test_handle_delete_success(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["add", "20", "Learn", "Rust"])
+    capsys.readouterr()
+    goals.handle(["delete", "Learn", "Rust"])
+    captured = capsys.readouterr()
+    assert "Deleted goal 'Learn Rust'" in captured.out
+
+
+def test_handle_delete_not_found(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["delete", "Nonexistent"])
+    captured = capsys.readouterr()
+    assert "No goal named 'Nonexistent' found" in captured.out
 
 
 def test_list_goals_empty(tmp_path):

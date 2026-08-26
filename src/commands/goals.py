@@ -94,6 +94,36 @@ def list_goals(db_path: Path | None = None) -> list[Goal]:
     ]
 
 
+def delete_goal(name: str, db_path: Path | None = None) -> Goal:
+    name = name.strip()
+    if not name:
+        raise GoalError("Goal name cannot be empty.")
+
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id, name, hours, active, priority, created_at "
+            "FROM goals WHERE name = ? COLLATE NOCASE",
+            (name,),
+        ).fetchone()
+        if row is None:
+            raise GoalError(f"No goal named '{name}' found.")
+
+        conn.execute("DELETE FROM goals WHERE id = ?", (row[0],))
+        conn.commit()
+    finally:
+        conn.close()
+
+    return Goal(
+        id=row[0],
+        name=row[1],
+        hours=row[2],
+        active=bool(row[3]),
+        priority=row[4],
+        created_at=row[5],
+    )
+
+
 def _handle_add(options: list[str]) -> None:
     if len(options) < 2:
         print_cli("[error] Usage: goal add <hours> <name>")
@@ -138,6 +168,21 @@ def _handle_list(options: list[str]) -> None:
             print_cli(f"- {goal.name} ({goal.hours}h)", 2)
 
 
+def _handle_delete(options: list[str]) -> None:
+    if not options:
+        print_cli("[error] Usage: goal delete <name>")
+        return
+
+    name = " ".join(options)
+    try:
+        goal = delete_goal(name)
+    except GoalError as exc:
+        print_cli(f"[error] {exc}")
+        return
+
+    print_cli(f"✓ Deleted goal '{goal.name}'")
+
+
 def _handle_help(options: list[str]) -> None:
     print_cli("Available goal subcommands:")
     for name, subcommand in GOAL_SUBCOMMANDS.items():
@@ -152,6 +197,7 @@ class _Subcommand(NamedTuple):
 GOAL_SUBCOMMANDS = {
     "add": _Subcommand("Add a new goal: goal add <hours> <name>", _handle_add),
     "list": _Subcommand("List all goals", _handle_list),
+    "delete": _Subcommand("Delete a goal: goal delete <name>", _handle_delete),
     "help": _Subcommand("List available goal subcommands", _handle_help),
 }
 
