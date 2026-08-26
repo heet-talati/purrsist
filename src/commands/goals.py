@@ -1,7 +1,9 @@
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from purrsist.output import print_cli
 
@@ -69,6 +71,29 @@ def add_goal(name: str, hours: float, db_path: Path | None = None) -> Goal:
     return Goal(id=cursor.lastrowid, name=name, hours=hours, created_at=created_at)
 
 
+def list_goals(db_path: Path | None = None) -> list[Goal]:
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT id, name, hours, active, priority, created_at "
+            "FROM goals ORDER BY active DESC, priority ASC"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        Goal(
+            id=row[0],
+            name=row[1],
+            hours=row[2],
+            active=bool(row[3]),
+            priority=row[4],
+            created_at=row[5],
+        )
+        for row in rows
+    ]
+
+
 def _handle_add(options: list[str]) -> None:
     if len(options) < 2:
         print_cli("[error] Usage: goal add <hours> <name>")
@@ -92,8 +117,42 @@ def _handle_add(options: list[str]) -> None:
     print_cli(f"✓ Added goal '{goal.name}' ({goal.hours}h)")
 
 
+def _handle_list(options: list[str]) -> None:
+    all_goals = list_goals()
+    if not all_goals:
+        print_cli("No goals yet. Add one with 'goal add <hours> <name>'.")
+        return
+
+    active = [g for g in all_goals if g.active]
+    inactive = [g for g in all_goals if not g.active]
+
+    if active:
+        print_cli("Active:")
+        for goal in active:
+            priority_str = f" [priority {goal.priority}]" if goal.priority else ""
+            print_cli(f"- {goal.name} ({goal.hours}h){priority_str}", 2)
+
+    if inactive:
+        print_cli("Inactive:")
+        for goal in inactive:
+            print_cli(f"- {goal.name} ({goal.hours}h)", 2)
+
+
+def _handle_help(options: list[str]) -> None:
+    print_cli("Available goal subcommands:")
+    for name, subcommand in GOAL_SUBCOMMANDS.items():
+        print_cli(f"- {name}: {subcommand.description}", 2)
+
+
+class _Subcommand(NamedTuple):
+    description: str
+    handler: Callable[[list[str]], None]
+
+
 GOAL_SUBCOMMANDS = {
-    "add": _handle_add,
+    "add": _Subcommand("Add a new goal: goal add <hours> <name>", _handle_add),
+    "list": _Subcommand("List all goals", _handle_list),
+    "help": _Subcommand("List available goal subcommands", _handle_help),
 }
 
 
@@ -103,13 +162,13 @@ def handle(options: list[str] | None = None) -> None:
         print_cli(f"[error] Usage: goal <{'|'.join(GOAL_SUBCOMMANDS)}> ...")
         return
 
-    subcommand, *rest = options
-    subcommand_handler = GOAL_SUBCOMMANDS.get(subcommand)
-    if subcommand_handler is None:
+    subcommand_name, *rest = options
+    subcommand = GOAL_SUBCOMMANDS.get(subcommand_name)
+    if subcommand is None:
         print_cli(
-            f"[error] Unknown goal subcommand '{subcommand}'. "
+            f"[error] Unknown goal subcommand '{subcommand_name}'. "
             f"Available: {', '.join(GOAL_SUBCOMMANDS)}"
         )
         return
 
-    subcommand_handler(rest)
+    subcommand.handler(rest)
