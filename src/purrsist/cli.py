@@ -27,6 +27,9 @@ def exit_message():
 
 def query_input():
     query = input("purrsist > ").split()
+    if not query:
+        return "", []
+
     command = query[0].strip()
     options = []
     if len(query) > 1:
@@ -48,7 +51,7 @@ def is_valid_option():
 
 def options_handler(options, command):
     # Reject any options passed to the command for now
-    if len(options) > 0:
+    if options:
         print_cli(
             f"[error] The '{command}' command does not take any options. Please try again."
         )
@@ -78,9 +81,16 @@ def show_help(options=None):
 
 # Main REPL Loop
 def repl():
-    command, options = query_input()
+    while True:
+        try:
+            command, options = query_input()
+        except KeyboardInterrupt:
+            print()
+            break
 
-    while command != "exit":
+        if command == "exit":
+            break
+
         match command:
             case "help":
                 show_help(options)
@@ -90,6 +100,5 @@ def repl():
                 print_cli(
                     "[error] Please enter a valid command! Use 'help' to see the list of available commands."
                 )
-        command, options = query_input()
 
     exit_message()
