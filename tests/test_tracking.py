@@ -280,6 +280,24 @@ def test_parse_start_args_reads_trailing_minutes():
     assert minutes == 45
 
 
+def test_parse_start_args_reads_pomodoro_preset():
+    name, minutes = tracking._parse_start_args(["Learn", "Rust", "pomodoro"])
+    assert name == "Learn Rust"
+    assert minutes == 25
+
+
+def test_parse_start_args_reads_short_preset():
+    name, minutes = tracking._parse_start_args(["Learn", "Rust", "short"])
+    assert name == "Learn Rust"
+    assert minutes == 15
+
+
+def test_parse_start_args_preset_is_case_insensitive():
+    name, minutes = tracking._parse_start_args(["Learn", "Rust", "SHORT"])
+    assert name == "Learn Rust"
+    assert minutes == 15
+
+
 def test_parse_start_args_single_token_is_name():
     name, minutes = tracking._parse_start_args(["Rust"])
     assert name == "Rust"
@@ -338,6 +356,25 @@ def test_handle_start_runs_countdown_to_completion(monkeypatch, capsys, tmp_path
     status = conn.execute("SELECT status FROM sessions").fetchone()[0]
     conn.close()
     assert status == "completed"
+
+
+def test_handle_start_accepts_preset_name(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+
+    monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+    monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    tracking.handle(["start", "Learn", "Rust", "short"])
+
+    captured = capsys.readouterr()
+    assert "Tracking 'Learn Rust' for 15 min" in captured.out
+
+    conn = sqlite3.connect(db_path)
+    planned_minutes = conn.execute("SELECT planned_minutes FROM sessions").fetchone()[0]
+    conn.close()
+    assert planned_minutes == 15
 
 
 def test_handle_start_ctrl_c_has_no_bell_or_completion_banner(

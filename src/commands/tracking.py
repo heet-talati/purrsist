@@ -43,6 +43,11 @@ class TrackError(ValueError):
 DEFAULT_MINUTES = 25.0
 TICK_SECONDS = 1
 
+PRESETS: dict[str, float] = {
+    "pomodoro": DEFAULT_MINUTES,
+    "short": 15.0,
+}
+
 
 @dataclass
 class Session:
@@ -331,18 +336,25 @@ def _parse_start_args(options: list[str]) -> tuple[str, float]:
     minutes = DEFAULT_MINUTES
     name_tokens = options
     if len(options) > 1:
-        *rest, maybe_minutes = options
-        try:
-            minutes = float(maybe_minutes)
+        *rest, last = options
+        preset_minutes = PRESETS.get(last.lower())
+        if preset_minutes is not None:
+            minutes = preset_minutes
             name_tokens = rest
-        except ValueError:
-            pass
+        else:
+            try:
+                minutes = float(last)
+                name_tokens = rest
+            except ValueError:
+                pass
     return " ".join(name_tokens), minutes
 
 
 def _handle_start(options: list[str]) -> None:
     if not options:
-        print_cli("[error] Usage: track start <goal_name> [minutes]")
+        print_cli(
+            f"[error] Usage: track start <goal_name> [{'|'.join(PRESETS)}|minutes]"
+        )
         return
 
     name, minutes = _parse_start_args(options)
@@ -410,7 +422,9 @@ class _Subcommand(NamedTuple):
 
 TRACK_SUBCOMMANDS = {
     "start": _Subcommand(
-        "Start a timer for a goal: track start <goal_name> [minutes]", _handle_start
+        "Start a timer for a goal: track start <goal_name> "
+        f"[{'|'.join(PRESETS)}|minutes] (default: pomodoro, {DEFAULT_MINUTES:g} min)",
+        _handle_start,
     ),
     "help": _Subcommand("List available track subcommands", _handle_help),
 }
