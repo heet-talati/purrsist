@@ -2,14 +2,6 @@ from importlib.metadata import version
 
 # Global Variables
 APP_VERSION = version("purrsist")
-COMMANDS = {
-    "exit": {"description": "Exit the program", "options": {}},
-    "help": {"description": "List available commands", "options": {}},
-    "version": {
-        "description": "Show the current version of the program",
-        "options": {},
-    },
-}
 
 
 # Command Line Interface (CLI) Functions
@@ -79,6 +71,24 @@ def show_help(options=None):
                 print_cli(f"-{option}", 3)
 
 
+# Command Registry
+# Maps a command name to its help text and its handler. `exit` has no handler
+# here because repl() breaks out of the loop for it before dispatching.
+COMMANDS = {
+    "exit": {"description": "Exit the program", "options": {}, "handler": None},
+    "help": {
+        "description": "List available commands",
+        "options": {},
+        "handler": show_help,
+    },
+    "version": {
+        "description": "Show the current version of the program",
+        "options": {},
+        "handler": show_version,
+    },
+}
+
+
 # Main REPL Loop
 def repl():
     while True:
@@ -91,14 +101,12 @@ def repl():
         if command == "exit":
             break
 
-        match command:
-            case "help":
-                show_help(options)
-            case "version":
-                show_version(options)
-            case _:
-                print_cli(
-                    "[error] Please enter a valid command! Use 'help' to see the list of available commands."
-                )
+        entry = COMMANDS.get(command)
+        if entry and entry["handler"]:
+            entry["handler"](options)
+        else:
+            print_cli(
+                "[error] Please enter a valid command! Use 'help' to see the list of available commands."
+            )
 
     exit_message()
