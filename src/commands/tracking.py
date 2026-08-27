@@ -3,8 +3,9 @@ import time
 from collections.abc import Callable
 from typing import NamedTuple
 
-from rich.console import Group, RenderableType
+from rich.console import Group, NewLine, RenderableType
 from rich.live import Live
+from rich.padding import Padding
 from rich.progress_bar import ProgressBar
 from rich.text import Text
 
@@ -120,15 +121,18 @@ def _countdown_renderable(
     bar = ProgressBar(
         total=total or 1, completed=elapsed, complete_style=style, finished_style=style
     )
+
+    timer_style = style if style.startswith("bold") else f"bold {style}"
+    digits = " ".join(_format_remaining(remaining))
+    timer = Padding(Text(digits, style=timer_style, justify="center"), (1, 0))
+
     if paused:
-        label = (
-            f"{ICON_PAUSE} PAUSED — {goal_name} "
-            f"({_format_remaining(remaining)} left, press 'p' to resume, "
-            f"'q' to stop)"
-        )
+        label = f"{ICON_PAUSE} PAUSED — {goal_name} (press 'p' to resume, 'q' to stop)"
     else:
-        label = f"{_format_remaining(remaining)} remaining — {goal_name}"
-    return Group(bar, Text(label, style=MUTED_STYLE))
+        label = f"remaining — {goal_name}"
+    return Group(
+        timer, bar, NewLine(), Text(label, style=MUTED_STYLE, justify="center")
+    )
 
 
 def _make_default_render(
