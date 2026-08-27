@@ -2,7 +2,19 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
-from purrsist.output import ICON_LOCKED, print_cli
+from rich.console import RenderableType
+from rich.progress_bar import ProgressBar
+from rich.table import Table
+
+from purrsist.output import (
+    ICON_LOCKED,
+    MUTED_STYLE,
+    PRIMARY_STYLE,
+    print_cli,
+    print_muted,
+    print_warning_panel,
+    render,
+)
 
 from .goals_data import (
     DEFAULT_MODE,
@@ -149,11 +161,11 @@ def _handle_list(options: list[str]) -> None:
     all_goals = list_goals()
     archived_goals = list_archived_goals()
     if not all_goals and not archived_goals:
-        print_cli("No goals yet. Add one with 'goal add <hours> <name>'.")
+        print_muted("No goals yet. Add one with 'goal add <hours> <name>'.")
         return
 
     if status.locked:
-        print_cli(
+        print_warning_panel(
             f"{ICON_LOCKED} Locked in on '{status.goal_name}' — falling behind pace. "
             f"Use 'goal unlock <reason>' to override."
         )
@@ -162,39 +174,59 @@ def _handle_list(options: list[str]) -> None:
     inactive = [g for g in all_goals if not g.active]
 
     if active:
-        print_cli("Active:")
-        for goal in active:
-            priority_str = f" [priority {goal.priority}]" if goal.priority else ""
-            print_cli(
-                f"- {_format_progress(goal)}{priority_str}{_format_pace(goal)}", 2
-            )
+        render(_build_goal_table("Active:", active, include_priority=True))
 
     if inactive:
-        print_cli("Inactive:")
-        for goal in inactive:
-            print_cli(f"- {_format_progress(goal)}{_format_pace(goal)}", 2)
+        render(_build_goal_table("Inactive:", inactive, include_priority=False))
 
     if archived_goals:
-        print_cli("Archived:")
+        table = Table(title="Archived:", title_style=PRIMARY_STYLE, box=None)
+        table.add_column("ID", style=MUTED_STYLE, justify="right")
+        table.add_column("Name", style=PRIMARY_STYLE)
+        table.add_column("Reason", style=MUTED_STYLE)
         for goal in archived_goals:
-            print_cli(f"- [{goal.id}] {goal.name} — {goal.delete_reason}", 2)
+            table.add_row(str(goal.id), goal.name, goal.delete_reason or "")
+        render(table)
 
 
-def _format_progress(goal: Goal) -> str:
-    return (
-        f"[{goal.id}] {goal.name} ({goal.spent_hours:.2f}h / {goal.hours:.2f}h, "
-        f"{goal.remaining_hours:.2f}h left)"
-    )
+def _build_goal_table(
+    title: str, goals_list: list[Goal], *, include_priority: bool
+) -> Table:
+    table = Table(title=title, title_style=PRIMARY_STYLE, box=None)
+    table.add_column("ID", style=MUTED_STYLE, justify="right")
+    table.add_column("Name", style=PRIMARY_STYLE)
+    table.add_column("Progress")
+    table.add_column("Hours", style=MUTED_STYLE)
+    if include_priority:
+        table.add_column("Pri", style=MUTED_STYLE, justify="center")
+    table.add_column("Pace", style=MUTED_STYLE)
+
+    for goal in goals_list:
+        completed = min(goal.spent_hours, goal.hours) if goal.hours > 0 else 0.0
+        bar = ProgressBar(total=goal.hours or 1.0, completed=completed, width=18)
+        hours_text = (
+            f"{goal.spent_hours:.2f}h / {goal.hours:.2f}h "
+            f"({goal.remaining_hours:.2f}h left)"
+        )
+        row: list[RenderableType] = [str(goal.id), goal.name, bar, hours_text]
+        if include_priority:
+            row.append(str(goal.priority) if goal.priority else "")
+        row.append(_format_pace(goal))
+        table.add_row(*row)
+
+    return table
 
 
 def _format_pace(goal: Goal) -> str:
     if goal.remaining_hours <= 0:
-        return " — goal reached"
+        return "goal reached"
     if goal.avg_hours_per_day <= 0:
-        return " — no pace yet"
+        return "no pace yet"
 
     projected_days = goal.remaining_hours / goal.avg_hours_per_day
-    return f" — avg {goal.avg_hours_per_day:.2f}h/day, ~{projected_days:.1f} days to finish"
+    return (
+        f"avg {goal.avg_hours_per_day:.2f}h/day, ~{projected_days:.1f} days to finish"
+    )
 
 
 def _handle_delete(options: list[str]) -> None:

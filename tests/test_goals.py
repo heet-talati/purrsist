@@ -397,7 +397,9 @@ def test_handle_list_shows_pace_and_projected_completion(monkeypatch, capsys, tm
     captured = capsys.readouterr()
 
     assert "avg 2.00h/day" in captured.out
-    assert "~3.0 days to finish" in captured.out  # 6h remaining / 2h/day
+    assert "~3.0 days to finish" in captured.out.replace(
+        "\n", " "
+    )  # 6h remaining / 2h/day
 
 
 def test_handle_list_shows_no_pace_yet_with_no_sessions(monkeypatch, capsys, tmp_path):
@@ -447,12 +449,17 @@ def test_handle_list_shows_active_and_inactive_sections(monkeypatch, capsys, tmp
     captured = capsys.readouterr()
 
     assert "Active:" in captured.out
-    assert (
-        "Learn Rust (0.00h / 20.00h, 20.00h left) [priority 1] — no pace yet"
-        in captured.out
+    active_line = next(
+        line for line in captured.out.splitlines() if "Learn Rust" in line
     )
+    assert "0.00h / 20.00h (20.00h left)" in active_line
+    assert "no pace yet" in active_line
+
     assert "Inactive:" in captured.out
-    assert "Learn Go (0.00h / 10.00h, 10.00h left)" in captured.out
+    inactive_line = next(
+        line for line in captured.out.splitlines() if "Learn Go" in line
+    )
+    assert "0.00h / 10.00h (10.00h left)" in inactive_line
 
 
 def test_handle_list_shows_archived_section(monkeypatch, capsys, tmp_path):
@@ -465,7 +472,10 @@ def test_handle_list_shows_archived_section(monkeypatch, capsys, tmp_path):
     captured = capsys.readouterr()
 
     assert "Archived:" in captured.out
-    assert "Learn Rust — lost interest" in captured.out
+    archived_line = next(
+        line for line in captured.out.splitlines() if "Learn Rust" in line
+    )
+    assert "lost interest" in archived_line
 
 
 def test_handle_list_shows_only_archived_without_no_goals_message(
@@ -1361,7 +1371,8 @@ def test_handle_list_shows_goal_id(monkeypatch, capsys, tmp_path):
 
     goals.handle(["list"])
     captured = capsys.readouterr()
-    assert f"[{goal.id}] Learn Rust" in captured.out
+    goal_line = next(line for line in captured.out.splitlines() if "Learn Rust" in line)
+    assert str(goal.id) in goal_line
 
 
 def test_handle_delete_accepts_id(monkeypatch, capsys, tmp_path):

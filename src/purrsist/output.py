@@ -1,6 +1,8 @@
 import sys
+import time
 
-from rich.console import Console
+from rich.console import Console, RenderableType
+from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
@@ -30,8 +32,15 @@ def _console() -> Console:
     # ignores a Python-level sys.stdout swap (e.g. pytest's capsys) — force
     # terminal detection off of sys.stdout.isatty() instead so redirected
     # or captured output stays plain.
+    is_tty = sys.stdout.isatty()
     return Console(
-        highlight=False, force_terminal=sys.stdout.isatty(), legacy_windows=False
+        highlight=False,
+        force_terminal=is_tty,
+        legacy_windows=False,
+        # Non-tty output (piped, redirected, captured in tests) can't report a
+        # real terminal width -- pick a generous fixed one so table/panel
+        # content doesn't wrap mid-word at Rich's narrow fallback default.
+        width=None if is_tty else 200,
     )
 
 
@@ -49,3 +58,35 @@ def print_cli(text, padding=1):
 
 def print_panel(content: str, *, subtitle: str | None = None) -> None:
     _console().print(Panel(content, border_style=BRAND_STYLE, subtitle=subtitle))
+
+
+def render(renderable: RenderableType) -> None:
+    """Print any Rich renderable (Table, Panel, ...) through the shared console."""
+    _console().print(renderable)
+
+
+def print_muted(text: str, padding: int = 1) -> None:
+    indent = "  " * padding
+    _console().print(Text(indent + text, style=f"{MUTED_STYLE} italic"))
+
+
+_LOCK_IN_REVEAL_STYLES = ["#5C4526", "#A97A3D", WARNING_STYLE]
+
+
+def print_warning_panel(content: str) -> None:
+    """Warning-tier Panel with a brief reveal pulse on a real terminal.
+
+    The lock-in trigger is a rare, meaningful moment (falling behind pace),
+    so it earns a short animated reveal -- skipped entirely when not a real
+    terminal (piped/redirected/tests) to avoid adding latency there.
+    """
+    if not sys.stdout.isatty():
+        _console().print(Panel(content, border_style=WARNING_STYLE))
+        return
+
+    console = _console()
+    with Live(console=console, transient=True, refresh_per_second=30) as live:
+        for style in _LOCK_IN_REVEAL_STYLES:
+            live.update(Panel(content, border_style=style))
+            time.sleep(0.1)
+    console.print(Panel(content, border_style=WARNING_STYLE))
