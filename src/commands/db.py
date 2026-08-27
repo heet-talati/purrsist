@@ -41,9 +41,13 @@ def connect(path: Path) -> sqlite3.Connection:
             ended_at TEXT,
             paused_seconds INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'running'
-                CHECK (status IN ('running', 'paused', 'completed', 'cancelled'))
+                CHECK (status IN ('running', 'paused', 'completed', 'cancelled')),
+            focused_seconds INTEGER
         )
         """
     )
+    session_columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    if "focused_seconds" not in session_columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN focused_seconds INTEGER")
     conn.commit()
     return conn

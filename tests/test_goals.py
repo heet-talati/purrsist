@@ -200,6 +200,47 @@ def test_list_goals_orders_active_before_inactive_and_by_priority(tmp_path):
     assert result == ["High", "Low", "Inactive"]
 
 
+def _insert_session(db_path, goal_id, status, focused_seconds):
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO sessions (goal_id, planned_minutes, started_at, status, "
+        "focused_seconds) VALUES (?, 25, '2026-01-01T00:00:00', ?, ?)",
+        (goal_id, status, focused_seconds),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_list_goals_sums_completed_and_cancelled_session_time(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 10, db_path=db_path)
+    _insert_session(db_path, goal.id, "completed", 3600)
+    _insert_session(db_path, goal.id, "cancelled", 1800)
+
+    result = goals.list_goals(db_path=db_path)[0]
+    assert result.spent_hours == 1.5
+    assert result.remaining_hours == 8.5
+
+
+def test_list_goals_ignores_running_and_paused_sessions(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 10, db_path=db_path)
+    _insert_session(db_path, goal.id, "running", 0)
+    _insert_session(db_path, goal.id, "paused", 0)
+
+    result = goals.list_goals(db_path=db_path)[0]
+    assert result.spent_hours == 0.0
+
+
+def test_list_goals_defaults_spent_hours_to_zero_with_no_sessions(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 10, db_path=db_path)
+
+    result = goals.list_goals(db_path=db_path)[0]
+    assert result.spent_hours == 0.0
+    assert result.remaining_hours == 10
+
+
 def test_handle_list_empty(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["list"])
@@ -222,9 +263,9 @@ def test_handle_list_shows_active_and_inactive_sections(monkeypatch, capsys, tmp
     captured = capsys.readouterr()
 
     assert "Active:" in captured.out
-    assert "Learn Rust (20.0h) [priority 1]" in captured.out
+    assert "Learn Rust (0.00h / 20.00h, 20.00h left) [priority 1]" in captured.out
     assert "Inactive:" in captured.out
-    assert "Learn Go (10.0h)" in captured.out
+    assert "Learn Go (0.00h / 10.00h, 10.00h left)" in captured.out
 
 
 def test_get_mode_defaults_to_relaxed(tmp_path):

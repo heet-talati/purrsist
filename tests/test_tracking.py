@@ -74,14 +74,17 @@ def test_complete_session_marks_completed(tmp_path):
 
     assert completed.status == "completed"
     assert completed.ended_at is not None
+    assert completed.focused_seconds == 25 * 60
 
     conn = sqlite3.connect(db_path)
     row = conn.execute(
-        "SELECT status, ended_at FROM sessions WHERE id = ?", (session.id,)
+        "SELECT status, ended_at, focused_seconds FROM sessions WHERE id = ?",
+        (session.id,),
     ).fetchone()
     conn.close()
     assert row[0] == "completed"
     assert row[1] is not None
+    assert row[2] == 25 * 60
 
 
 def test_complete_session_rejects_missing_session(tmp_path):
@@ -100,6 +103,18 @@ def test_complete_session_rejects_already_completed(tmp_path):
         tracking.complete_session(session.id, db_path=db_path)
 
 
+def test_complete_session_subtracts_paused_seconds_from_focused_time(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.pause_session(session.id, db_path=db_path)
+    tracking.resume_session(session.id, 90, db_path=db_path)
+
+    completed = tracking.complete_session(session.id, db_path=db_path)
+
+    assert completed.focused_seconds == 25 * 60 - 90
+
+
 def test_cancel_session_marks_cancelled(tmp_path):
     db_path = tmp_path / "test.db"
     _add_active_goal(db_path)
@@ -109,6 +124,34 @@ def test_cancel_session_marks_cancelled(tmp_path):
 
     assert cancelled.status == "cancelled"
     assert cancelled.ended_at is not None
+    assert cancelled.focused_seconds == 25 * 60
+
+
+def test_cancel_session_accounts_for_remaining_and_paused_time(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.pause_session(session.id, db_path=db_path)
+    tracking.resume_session(session.id, 60, db_path=db_path)
+
+    cancelled = tracking.cancel_session(session.id, 300, db_path=db_path)
+
+    assert cancelled.focused_seconds == 25 * 60 - 300 - 60
+
+
+def test_cancel_session_total_paused_seconds_overrides_db_column(tmp_path):
+    # A quit-while-paused folds the in-progress pause segment into the
+    # countdown's in-memory total before it's ever persisted via resume, so
+    # the caller's live total must win over the (stale) DB column.
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.pause_session(session.id, db_path=db_path)  # never resumed
+
+    cancelled = tracking.cancel_session(session.id, 0, 10, db_path=db_path)
+
+    assert cancelled.paused_seconds == 10
+    assert cancelled.focused_seconds == 25 * 60 - 10
 
 
 def test_run_countdown_ticks_down_to_zero():

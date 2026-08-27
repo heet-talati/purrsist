@@ -25,6 +25,11 @@ class Goal:
     priority: int | None = None
     created_at: str = ""
     id: int | None = None
+    spent_hours: float = 0.0
+
+    @property
+    def remaining_hours(self) -> float:
+        return self.hours - self.spent_hours
 
 
 def goals_db_path() -> Path:
@@ -123,7 +128,10 @@ def list_goals(db_path: Path | None = None) -> list[Goal]:
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            "SELECT id, name, hours, active, priority, created_at "
+            "SELECT id, name, hours, active, priority, created_at, "
+            "COALESCE((SELECT SUM(focused_seconds) FROM sessions "
+            "WHERE sessions.goal_id = goals.id "
+            "AND sessions.status IN ('completed', 'cancelled')), 0) "
             "FROM goals ORDER BY active DESC, priority ASC"
         ).fetchall()
     finally:
@@ -137,6 +145,7 @@ def list_goals(db_path: Path | None = None) -> list[Goal]:
             active=bool(row[3]),
             priority=row[4],
             created_at=row[5],
+            spent_hours=row[6] / 3600,
         )
         for row in rows
     ]
@@ -362,12 +371,19 @@ def _handle_list(options: list[str]) -> None:
         print_cli("Active:")
         for goal in active:
             priority_str = f" [priority {goal.priority}]" if goal.priority else ""
-            print_cli(f"- {goal.name} ({goal.hours}h){priority_str}", 2)
+            print_cli(f"- {_format_progress(goal)}{priority_str}", 2)
 
     if inactive:
         print_cli("Inactive:")
         for goal in inactive:
-            print_cli(f"- {goal.name} ({goal.hours}h)", 2)
+            print_cli(f"- {_format_progress(goal)}", 2)
+
+
+def _format_progress(goal: Goal) -> str:
+    return (
+        f"{goal.name} ({goal.spent_hours:.2f}h / {goal.hours:.2f}h, "
+        f"{goal.remaining_hours:.2f}h left)"
+    )
 
 
 def _handle_delete(options: list[str]) -> None:
