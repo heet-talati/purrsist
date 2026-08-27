@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -241,6 +242,74 @@ def test_list_goals_defaults_spent_hours_to_zero_with_no_sessions(tmp_path):
     assert result.remaining_hours == 10
 
 
+def _insert_goal_with_created_at(db_path, name, hours, created_at):
+    goal = goals.add_goal(name, hours, db_path=db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE goals SET created_at = ? WHERE id = ?", (created_at, goal.id))
+    conn.commit()
+    conn.close()
+
+
+def test_avg_hours_per_day_divides_spent_by_elapsed_days(tmp_path):
+    db_path = tmp_path / "test.db"
+    two_days_ago = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    _insert_goal_with_created_at(db_path, "Learn Rust", 10, two_days_ago)
+    goal_id = goals.list_goals(db_path=db_path)[0].id
+    _insert_session(db_path, goal_id, "completed", 4 * 3600)  # 4h spent
+
+    goal = goals.list_goals(db_path=db_path)[0]
+    assert goal.avg_hours_per_day == pytest.approx(2.0, rel=0.01)
+
+
+def test_avg_hours_per_day_is_zero_with_no_time_spent(tmp_path):
+    db_path = tmp_path / "test.db"
+    two_days_ago = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    _insert_goal_with_created_at(db_path, "Learn Rust", 10, two_days_ago)
+
+    goal = goals.list_goals(db_path=db_path)[0]
+    assert goal.avg_hours_per_day == 0.0
+
+
+def test_handle_list_shows_pace_and_projected_completion(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    two_days_ago = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    _insert_goal_with_created_at(db_path, "Learn Rust", 10, two_days_ago)
+    goal_id = goals.list_goals(db_path=db_path)[0].id
+    _insert_session(db_path, goal_id, "completed", 4 * 3600)  # 4h spent, 2h/day avg
+
+    goals.handle(["list"])
+    captured = capsys.readouterr()
+
+    assert "avg 2.00h/day" in captured.out
+    assert "~3.0 days to finish" in captured.out  # 6h remaining / 2h/day
+
+
+def test_handle_list_shows_no_pace_yet_with_no_sessions(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["add", "10", "Learn", "Rust"])
+    capsys.readouterr()
+
+    goals.handle(["list"])
+    captured = capsys.readouterr()
+
+    assert "no pace yet" in captured.out
+
+
+def test_handle_list_shows_goal_reached_when_target_met(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.handle(["add", "1", "Learn", "Rust"])
+    capsys.readouterr()
+    goal_id = goals.list_goals(db_path=db_path)[0].id
+    _insert_session(db_path, goal_id, "completed", 3600)  # 1h spent == 1h target
+
+    goals.handle(["list"])
+    captured = capsys.readouterr()
+
+    assert "goal reached" in captured.out
+
+
 def test_handle_list_empty(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["list"])
@@ -263,7 +332,10 @@ def test_handle_list_shows_active_and_inactive_sections(monkeypatch, capsys, tmp
     captured = capsys.readouterr()
 
     assert "Active:" in captured.out
-    assert "Learn Rust (0.00h / 20.00h, 20.00h left) [priority 1]" in captured.out
+    assert (
+        "Learn Rust (0.00h / 20.00h, 20.00h left) [priority 1] — no pace yet"
+        in captured.out
+    )
     assert "Inactive:" in captured.out
     assert "Learn Go (0.00h / 10.00h, 10.00h left)" in captured.out
 

@@ -31,6 +31,17 @@ class Goal:
     def remaining_hours(self) -> float:
         return self.hours - self.spent_hours
 
+    @property
+    def days_since_created(self) -> float:
+        created = datetime.fromisoformat(self.created_at)
+        elapsed = datetime.now(UTC) - created
+        return max(elapsed.total_seconds() / 86400, 0.0)
+
+    @property
+    def avg_hours_per_day(self) -> float:
+        days = self.days_since_created
+        return self.spent_hours / days if days > 0 else 0.0
+
 
 def goals_db_path() -> Path:
     return Path.home() / ".purrsist" / "purrsist.db"
@@ -371,12 +382,14 @@ def _handle_list(options: list[str]) -> None:
         print_cli("Active:")
         for goal in active:
             priority_str = f" [priority {goal.priority}]" if goal.priority else ""
-            print_cli(f"- {_format_progress(goal)}{priority_str}", 2)
+            print_cli(
+                f"- {_format_progress(goal)}{priority_str}{_format_pace(goal)}", 2
+            )
 
     if inactive:
         print_cli("Inactive:")
         for goal in inactive:
-            print_cli(f"- {_format_progress(goal)}", 2)
+            print_cli(f"- {_format_progress(goal)}{_format_pace(goal)}", 2)
 
 
 def _format_progress(goal: Goal) -> str:
@@ -384,6 +397,16 @@ def _format_progress(goal: Goal) -> str:
         f"{goal.name} ({goal.spent_hours:.2f}h / {goal.hours:.2f}h, "
         f"{goal.remaining_hours:.2f}h left)"
     )
+
+
+def _format_pace(goal: Goal) -> str:
+    if goal.remaining_hours <= 0:
+        return " — goal reached"
+    if goal.avg_hours_per_day <= 0:
+        return " — no pace yet"
+
+    projected_days = goal.remaining_hours / goal.avg_hours_per_day
+    return f" — avg {goal.avg_hours_per_day:.2f}h/day, ~{projected_days:.1f} days to finish"
 
 
 def _handle_delete(options: list[str]) -> None:
