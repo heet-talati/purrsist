@@ -164,19 +164,17 @@ def test_run_countdown_ticks_down_to_zero():
         goal_id=1, goal_name="Learn Rust", planned_minutes=0.05, started_at="now"
     )
     sleeps = []
-    writes = []
+    renders = []
 
     outcome = tracking.run_countdown(
         session,
         sleep_fn=sleeps.append,
-        write_fn=writes.append,
+        render_fn=lambda remaining, paused: renders.append((remaining, paused)),
         poll_keypress_fn=lambda: None,
     )
 
     assert sleeps == [1, 1, 1]
-    assert len(writes) == 4  # 3 ticks + final clear line
-    assert "00:03" in writes[0]
-    assert "00:01" in writes[2]
+    assert renders == [(3, False), (2, False), (1, False)]
     assert outcome.stopped_early is False
     assert outcome.remaining_seconds == 0
     assert outcome.total_paused_seconds == 0
@@ -193,7 +191,7 @@ def test_run_countdown_pause_then_resume_accumulates_paused_seconds():
     outcome = tracking.run_countdown(
         session,
         sleep_fn=lambda _: None,
-        write_fn=lambda _: None,
+        render_fn=lambda *_: None,
         poll_keypress_fn=lambda: next(keys),
         on_pause=lambda: pauses.append(True),
         on_resume=lambda delta: resumes.append(delta),
@@ -214,7 +212,7 @@ def test_run_countdown_quit_key_stops_early():
     outcome = tracking.run_countdown(
         session,
         sleep_fn=lambda _: None,
-        write_fn=lambda _: None,
+        render_fn=lambda *_: None,
         poll_keypress_fn=lambda: next(keys),
     )
 
@@ -232,7 +230,7 @@ def test_run_countdown_quit_key_while_paused_counts_segment_as_paused():
     outcome = tracking.run_countdown(
         session,
         sleep_fn=lambda _: None,
-        write_fn=lambda _: None,
+        render_fn=lambda *_: None,
         poll_keypress_fn=lambda: next(keys),
     )
 
@@ -240,27 +238,83 @@ def test_run_countdown_quit_key_while_paused_counts_segment_as_paused():
     assert outcome.total_paused_seconds == 1
 
 
-def test_run_countdown_pads_shorter_line_to_clear_previous_longer_one():
-    # The "PAUSED ... press 'p' to resume" line is longer than the plain
-    # countdown line -- a bare "\r" doesn't erase leftover characters, so
-    # the line after a resume must be padded to at least the previous
-    # line's length or stale text lingers on screen.
+def test_run_countdown_render_fn_receives_paused_state():
     session = tracking.Session(
         goal_id=1, goal_name="X", planned_minutes=0.05, started_at="now"
     )
     keys = iter(["p", "p", None, None, None])
-    writes = []
+    renders = []
 
     tracking.run_countdown(
         session,
         sleep_fn=lambda _: None,
-        write_fn=writes.append,
+        render_fn=lambda remaining, paused: renders.append((remaining, paused)),
         poll_keypress_fn=lambda: next(keys),
     )
 
-    paused_line, resumed_line = writes[0], writes[1]
-    assert "PAUSED" in paused_line
-    assert len(resumed_line) - 1 == len(paused_line) - 1  # both minus leading \r
+    assert renders[0] == (3, True)
+    assert renders[1] == (3, False)
+
+
+def _seed_session(conn, goal_id, days_ago, status="completed", focused_seconds=60):
+    started = (datetime.now(UTC) - timedelta(days=days_ago)).isoformat()
+    conn.execute(
+        "INSERT INTO sessions (goal_id, planned_minutes, started_at, status, "
+        "focused_seconds) VALUES (?, 25, ?, ?, ?)",
+        (goal_id, started, status, focused_seconds),
+    )
+
+
+def test_current_streak_days_zero_when_no_sessions(tmp_path):
+    db_path = tmp_path / "test.db"
+    assert tracking_data.current_streak_days(db_path) == 0
+
+
+def test_current_streak_days_counts_consecutive_days_including_today(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    for days_ago in (0, 1, 2):
+        _seed_session(conn, goal.id, days_ago)
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 3
+
+
+def test_current_streak_days_continues_through_missed_today(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    for days_ago in (1, 2):
+        _seed_session(conn, goal.id, days_ago)
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 2
+
+
+def test_current_streak_days_stops_at_gap(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    for days_ago in (0, 2):  # gap at day 1
+        _seed_session(conn, goal.id, days_ago)
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 1
+
+
+def test_current_streak_days_ignores_zero_focus_sessions(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    _seed_session(conn, goal.id, 0, status="cancelled", focused_seconds=0)
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 0
 
 
 def test_pause_session_marks_paused(tmp_path):
@@ -367,8 +421,8 @@ def test_handle_unknown_subcommand(capsys):
 def test_handle_help_lists_subcommands(capsys):
     tracking.handle(["help"])
     captured = capsys.readouterr()
-    assert "start:" in captured.out
-    assert "help:" in captured.out
+    for name in tracking.TRACK_SUBCOMMANDS:
+        assert name in captured.out
 
 
 def test_handle_start_missing_args(capsys):
