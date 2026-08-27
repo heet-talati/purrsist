@@ -383,6 +383,96 @@ def restore_goal(name: str, db_path: Path | None = None) -> Goal:
     return Goal(id=row[0], name=row[1], hours=row[2], created_at=row[3])
 
 
+_UPDATE_FIELDS = ("name", "hours", "deadline")
+
+
+def update_goal(name: str, field: str, value: str, db_path: Path | None = None) -> Goal:
+    name = name.strip()
+    if not name:
+        raise GoalError("Goal name cannot be empty.")
+    if field not in _UPDATE_FIELDS:
+        raise GoalError(
+            f"Unknown field '{field}'. Choose from: {', '.join(_UPDATE_FIELDS)}."
+        )
+
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id, name, hours, active, priority, created_at, deadline "
+            "FROM goals WHERE name = ? COLLATE NOCASE AND archived_at IS NULL",
+            (name,),
+        ).fetchone()
+        if row is None:
+            raise GoalError(f"No goal named '{name}' found.")
+        goal_id, current_name, hours, active, priority, created_at, deadline = row
+
+        if field == "name":
+            new_name = value.strip()
+            if not new_name:
+                raise GoalError("Goal name cannot be empty.")
+            try:
+                conn.execute(
+                    "UPDATE goals SET name = ? WHERE id = ?", (new_name, goal_id)
+                )
+            except sqlite3.IntegrityError as exc:
+                raise GoalError(f"A goal named '{new_name}' already exists.") from exc
+            current_name = new_name
+        elif field == "hours":
+            try:
+                new_hours = float(value)
+            except ValueError:
+                raise GoalError(f"'{value}' is not a valid number of hours.") from None
+            if new_hours <= 0:
+                raise GoalError("Hours must be a positive number.")
+            conn.execute(
+                "UPDATE goals SET hours = ? WHERE id = ?", (new_hours, goal_id)
+            )
+            hours = new_hours
+        else:  # deadline
+            if value.strip().lower() == "none":
+                new_deadline = None
+            else:
+                new_deadline = _parse_deadline_token(value.strip())
+                if new_deadline is None:
+                    raise GoalError(
+                        f"'{value}' is not a valid deadline "
+                        "(use a day count, YYYY-MM-DD, or 'none')."
+                    )
+            conn.execute(
+                "UPDATE goals SET deadline = ? WHERE id = ?", (new_deadline, goal_id)
+            )
+            deadline = new_deadline
+
+        # A pace-affecting edit (hours or deadline) to the goal the lock-in
+        # trigger is currently watching must be reflected immediately --
+        # otherwise the once-a-day cache in refresh_lock_in would keep
+        # reporting yesterday's (now stale) lock state until tomorrow.
+        force_recheck = (
+            field in ("hours", "deadline") and bool(active) and priority == 1
+        )
+        if force_recheck:
+            conn.execute(
+                "UPDATE app_settings SET lock_in_checked_on = NULL WHERE id = 1"
+            )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    if force_recheck:
+        refresh_lock_in(db_path)
+
+    return Goal(
+        id=goal_id,
+        name=current_name,
+        hours=hours,
+        active=bool(active),
+        priority=priority,
+        created_at=created_at,
+        deadline=deadline,
+    )
+
+
 class SlotsFullError(GoalError):
     def __init__(self, message: str, active_goals: list[Goal]):
         super().__init__(message)
@@ -584,6 +674,46 @@ def _handle_add(options: list[str]) -> None:
 
     deadline_str = f", due {goal.deadline}" if goal.deadline else ""
     print_cli(f"✓ Added goal '{goal.name}' ({goal.hours}h{deadline_str})")
+
+
+def _parse_update_args(options: list[str]) -> tuple[str, str, str] | None:
+    # `field` is a reserved keyword rather than a fixed position, since the
+    # goal name itself (before it) can be multiple tokens.
+    for i in range(1, len(options)):
+        if options[i].lower() in _UPDATE_FIELDS:
+            name = " ".join(options[:i])
+            field = options[i].lower()
+            value = " ".join(options[i + 1 :])
+            return name, field, value
+    return None
+
+
+def _handle_update(options: list[str]) -> None:
+    usage = "[error] Usage: goal update <name> <name|hours|deadline> <value>"
+    parsed = _parse_update_args(options)
+    if parsed is None:
+        print_cli(usage)
+        return
+
+    name, field, value = parsed
+    if not value:
+        print_cli(usage)
+        return
+    if field in ("hours", "deadline") and _refuse_if_locked():
+        return
+
+    try:
+        goal = update_goal(name, field, value)
+    except GoalError as exc:
+        print_cli(f"[error] {exc}")
+        return
+
+    if field == "name":
+        print_cli(f"✓ Renamed '{name}' to '{goal.name}'")
+    elif field == "hours":
+        print_cli(f"✓ '{goal.name}' target updated to {goal.hours:.2f}h")
+    else:
+        print_cli(f"✓ '{goal.name}' deadline set to {goal.deadline or 'none'}")
 
 
 def _refuse_if_locked(db_path: Path | None = None) -> bool:
@@ -817,6 +947,11 @@ class _Subcommand(NamedTuple):
 GOAL_SUBCOMMANDS = {
     "add": _Subcommand(
         "Add a new goal: goal add <hours> <name> [days|date]", _handle_add
+    ),
+    "update": _Subcommand(
+        "Edit a goal's name, hours, or deadline: "
+        "goal update <name> <name|hours|deadline> <value>",
+        _handle_update,
     ),
     "list": _Subcommand("List all goals", _handle_list),
     "delete": _Subcommand(
