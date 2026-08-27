@@ -161,3 +161,29 @@ def test_repl_handles_keyboard_interrupt(monkeypatch, capsys):
     cli.repl()
     captured = capsys.readouterr()
     assert "signing off" in captured.out
+
+
+def test_repl_handles_eof_error(monkeypatch, capsys):
+    def raise_eof(_):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", raise_eof)
+    cli.repl()
+    captured = capsys.readouterr()
+    assert "signing off" in captured.out
+
+
+def test_repl_handles_eof_error_after_a_command(monkeypatch, capsys):
+    responses = iter(["version"])
+
+    def _next_input(_):
+        try:
+            return next(responses)
+        except StopIteration:
+            raise EOFError from None
+
+    monkeypatch.setattr("builtins.input", _next_input)
+    cli.repl()
+    captured = capsys.readouterr()
+    assert f"Purrsist version {cli.APP_VERSION}" in captured.out
+    assert "signing off" in captured.out

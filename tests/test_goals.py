@@ -124,6 +124,39 @@ def test_delete_goal_rejects_missing_name(tmp_path):
         goals.delete_goal("Nonexistent", db_path=db_path)
 
 
+def test_delete_active_goal_closes_priority_gap(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("A", 10, db_path=db_path)
+    goals.add_goal("B", 10, db_path=db_path)
+    goals.add_goal("C", 10, db_path=db_path)
+    goals.activate_goal("A", db_path=db_path)  # priority 1
+    goals.activate_goal("B", db_path=db_path)  # priority 2
+    goals.activate_goal("C", db_path=db_path)  # priority 3
+
+    goals.delete_goal("B", db_path=db_path)
+
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        "SELECT name, priority FROM goals WHERE active = 1 ORDER BY priority"
+    ).fetchall()
+    conn.close()
+    assert rows == [("A", 1), ("C", 2)]
+
+
+def test_delete_inactive_goal_does_not_touch_active_priorities(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("A", 10, db_path=db_path)
+    goals.add_goal("B", 10, db_path=db_path)
+    goals.activate_goal("A", db_path=db_path)  # priority 1
+
+    goals.delete_goal("B", db_path=db_path)
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute("SELECT priority FROM goals WHERE name = 'A'").fetchone()
+    conn.close()
+    assert row == (1,)
+
+
 def test_handle_delete_missing_args(capsys):
     goals.handle(["delete"])
     captured = capsys.readouterr()
