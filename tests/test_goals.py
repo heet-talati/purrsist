@@ -68,6 +68,7 @@ def test_handle_help_lists_subcommands(capsys):
     assert "deactivate:" in captured.out
     assert "move:" in captured.out
     assert "mode:" in captured.out
+    assert "unlock:" in captured.out
     assert "help:" in captured.out
 
 
@@ -312,12 +313,14 @@ def test_list_goals_orders_active_before_inactive_and_by_priority(tmp_path):
     assert result == ["High", "Low", "Inactive"]
 
 
-def _insert_session(db_path, goal_id, status, focused_seconds):
+def _insert_session(
+    db_path, goal_id, status, focused_seconds, started_at="2026-01-01T00:00:00"
+):
     conn = sqlite3.connect(db_path)
     conn.execute(
         "INSERT INTO sessions (goal_id, planned_minutes, started_at, status, "
-        "focused_seconds) VALUES (?, 25, '2026-01-01T00:00:00', ?, ?)",
-        (goal_id, status, focused_seconds),
+        "focused_seconds) VALUES (?, 25, ?, ?, ?)",
+        (goal_id, started_at, status, focused_seconds),
     )
     conn.commit()
     conn.close()
@@ -742,3 +745,321 @@ def test_handle_mode_sets_mode(monkeypatch, capsys, tmp_path):
     goals.handle(["mode", "hardcore"])
     captured = capsys.readouterr()
     assert "Mode set to 'hardcore'" in captured.out
+
+
+# --- goal add: deadline parsing ---
+
+
+def test_parse_add_args_no_deadline():
+    hours_raw, name, deadline = goals._parse_add_args(["20", "Learn", "Rust"])
+    assert hours_raw == "20"
+    assert name == "Learn Rust"
+    assert deadline is None
+
+
+def test_parse_add_args_relative_days_deadline():
+    _hours_raw, name, deadline = goals._parse_add_args(["20", "Learn", "Rust", "30"])
+    assert name == "Learn Rust"
+    expected = (datetime.now(UTC).date() + timedelta(days=30)).isoformat()
+    assert deadline == expected
+
+
+def test_parse_add_args_explicit_date_deadline():
+    _hours_raw, name, deadline = goals._parse_add_args(
+        ["20", "Learn", "Rust", "2026-12-01"]
+    )
+    assert name == "Learn Rust"
+    assert deadline == "2026-12-01"
+
+
+def test_parse_add_args_single_name_token_not_treated_as_deadline():
+    # Only one token after hours -- must be the name, not a deadline, even
+    # though "30" would otherwise parse as one.
+    _hours_raw, name, deadline = goals._parse_add_args(["20", "30"])
+    assert name == "30"
+    assert deadline is None
+
+
+def test_parse_add_args_non_date_trailing_token_stays_part_of_name():
+    _hours_raw, name, deadline = goals._parse_add_args(["20", "Learn", "Rust", "Extra"])
+    assert name == "Learn Rust Extra"
+    assert deadline is None
+
+
+def test_add_goal_stores_deadline(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 20, "2026-12-01", db_path=db_path)
+    assert goal.deadline == "2026-12-01"
+    assert goals.list_goals(db_path=db_path)[0].deadline == "2026-12-01"
+
+
+def test_handle_add_with_deadline_shows_due_date(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["add", "20", "Learn", "Rust", "2026-12-01"])
+    captured = capsys.readouterr()
+    assert "due 2026-12-01" in captured.out
+
+
+# --- lock-in trigger ---
+
+
+def _days_from_now(n):
+    return (datetime.now(UTC).date() + timedelta(days=n)).isoformat()
+
+
+def _set_lock_in_checked_on(db_path, iso_date):
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE app_settings SET lock_in_checked_on = ?", (iso_date,))
+    conn.commit()
+    conn.close()
+
+
+def test_refresh_lock_in_locks_when_falling_behind(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+
+    status = goals.refresh_lock_in(db_path=db_path)
+
+    assert status.locked is True
+    assert status.goal_name == "Learn Rust"
+    assert goals.get_mode(db_path=db_path) == "lock_in"
+
+
+def test_refresh_lock_in_deactivates_other_goals_on_lock(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.set_mode("hardcore", db_path=db_path)
+    goals.add_goal("Side Project", 5, db_path=db_path)
+    goals.activate_goal("Side Project", db_path=db_path)
+
+    goals.refresh_lock_in(db_path=db_path)
+
+    by_name = {g.name: g.active for g in goals.list_goals(db_path=db_path)}
+    assert by_name["Learn Rust"] is True
+    assert by_name["Side Project"] is False
+
+
+def test_refresh_lock_in_not_locked_with_sufficient_pace(tmp_path):
+    db_path = tmp_path / "test.db"
+    # 20h target, 60 days to the deadline: after 2h spent, required pace is
+    # 18h / 60d = 0.3h/day. A 2h session in the last 4 days averages to
+    # 0.5h/day over that window -- comfortably ahead of the requirement.
+    goals.add_goal("Learn Rust", 20, _days_from_now(60), db_path=db_path)
+    goal = goals.activate_goal("Learn Rust", db_path=db_path)
+    _insert_session(
+        db_path,
+        goal.id,
+        "completed",
+        2 * 3600,
+        started_at=datetime.now(UTC).isoformat(),
+    )
+
+    status = goals.refresh_lock_in(db_path=db_path)
+
+    assert status.locked is False
+    assert goals.get_mode(db_path=db_path) == "relaxed"
+
+
+def test_refresh_lock_in_ignores_goal_without_deadline(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+
+    status = goals.refresh_lock_in(db_path=db_path)
+
+    assert status.locked is False
+
+
+def test_refresh_lock_in_ignores_non_priority_goals(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.set_mode("hardcore", db_path=db_path)
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)  # priority 1, no deadline
+    goals.add_goal("Side Project", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Side Project", db_path=db_path)  # priority 2, tight deadline
+
+    status = goals.refresh_lock_in(db_path=db_path)
+
+    assert status.locked is False
+
+
+def test_refresh_lock_in_auto_unlocks_when_goal_no_longer_qualifies(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    assert goals.refresh_lock_in(db_path=db_path).locked is True
+
+    # Simulate the next day and remove the goal's deadline -- nothing left
+    # for the trigger to enforce.
+    _set_lock_in_checked_on(db_path, _days_from_now(-1))
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE goals SET deadline = NULL WHERE name = 'Learn Rust'")
+    conn.commit()
+    conn.close()
+
+    status = goals.refresh_lock_in(db_path=db_path)
+    assert status.locked is False
+
+
+def test_refresh_lock_in_caches_within_same_day(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goal = goals.activate_goal("Learn Rust", db_path=db_path)
+    assert goals.refresh_lock_in(db_path=db_path).locked is True
+
+    # Even though pace now easily clears the requirement, the same-day
+    # cache should keep reporting locked until the next evaluation day.
+    _insert_session(
+        db_path,
+        goal.id,
+        "completed",
+        20 * 3600,
+        started_at=datetime.now(UTC).isoformat(),
+    )
+    status = goals.refresh_lock_in(db_path=db_path)
+    assert status.locked is True
+
+    _set_lock_in_checked_on(db_path, _days_from_now(-1))
+    status = goals.refresh_lock_in(db_path=db_path)
+    assert status.locked is False
+
+
+def test_refresh_lock_in_does_not_consume_days_slot_when_nothing_to_evaluate(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    # Not active yet -- an early check (as happens mid-activation via
+    # _refuse_if_locked) must not burn today's real evaluation slot.
+    assert goals.refresh_lock_in(db_path=db_path).locked is False
+
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    status = goals.refresh_lock_in(db_path=db_path)
+    assert status.locked is True
+
+
+def test_unlock_requires_reason(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+
+    with pytest.raises(goals.GoalError):
+        goals.unlock("   ", db_path=db_path)
+
+
+def test_unlock_requires_currently_locked(tmp_path):
+    db_path = tmp_path / "test.db"
+    with pytest.raises(goals.GoalError):
+        goals.unlock("taking a break", db_path=db_path)
+
+
+def test_unlock_preserves_for_rest_of_day(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    assert goals.refresh_lock_in(db_path=db_path).locked is True
+
+    goals.unlock("taking a break", db_path=db_path)
+
+    # Same-day re-check must not immediately re-lock, even though pace is
+    # still objectively behind.
+    status = goals.refresh_lock_in(db_path=db_path)
+    assert status.locked is False
+
+
+def test_handle_mode_blocked_when_locked(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+    capsys.readouterr()
+
+    goals.handle(["mode", "relaxed"])
+    captured = capsys.readouterr()
+    assert "Locked in on 'Learn Rust'" in captured.out
+    assert goals.get_mode(db_path=db_path) == "lock_in"
+
+
+def test_handle_mode_read_only_allowed_when_locked(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+    capsys.readouterr()
+
+    goals.handle(["mode"])
+    captured = capsys.readouterr()
+    assert "Current mode: lock_in" in captured.out
+
+
+def test_handle_priority_blocked_when_locked(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.add_goal("Side Project", 5, db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+    capsys.readouterr()
+
+    goals.handle(["priority", "Side", "Project"])
+    captured = capsys.readouterr()
+    assert "Locked in on 'Learn Rust'" in captured.out
+    assert goals.list_goals(db_path=db_path)[1].active is False
+
+
+def test_handle_deactivate_blocked_when_locked(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+    capsys.readouterr()
+
+    goals.handle(["deactivate", "Learn", "Rust"])
+    captured = capsys.readouterr()
+    assert "Locked in on 'Learn Rust'" in captured.out
+    assert goals.list_goals(db_path=db_path)[0].active is True
+
+
+def test_handle_list_shows_lock_banner(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+
+    goals.handle(["list"])
+    captured = capsys.readouterr()
+    assert "Locked in on 'Learn Rust'" in captured.out
+
+
+def test_handle_unlock_missing_args(capsys):
+    goals.handle(["unlock"])
+    captured = capsys.readouterr()
+    assert "[error] Usage: goal unlock <reason>" in captured.out
+
+
+def test_handle_unlock_not_locked(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["unlock", "reason"])
+    captured = capsys.readouterr()
+    assert "Not currently locked" in captured.out
+
+
+def test_handle_unlock_success(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+    capsys.readouterr()
+
+    goals.handle(["unlock", "taking", "a", "break"])
+    captured = capsys.readouterr()
+    assert "Unlocked" in captured.out
+
+    goals.handle(["mode", "relaxed"])
+    captured = capsys.readouterr()
+    assert "Mode set to 'relaxed'" in captured.out

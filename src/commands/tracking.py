@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
-from commands import db
+from commands import db, goals
 from purrsist.output import print_cli
 
 if sys.platform == "win32":
@@ -388,6 +388,8 @@ def _handle_start(options: list[str]) -> None:
         return
 
     name, minutes = _parse_start_args(options)
+
+    goals.refresh_lock_in()
 
     try:
         session = start_session(name, minutes)

@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -8,6 +9,10 @@ from commands import goals, tracking
 def _add_active_goal(db_path, name="Learn Rust", hours=20):
     goals.add_goal(name, hours, db_path=db_path)
     return goals.activate_goal(name, db_path=db_path)
+
+
+def _days_from_now(n):
+    return (datetime.now(UTC).date() + timedelta(days=n)).isoformat()
 
 
 def test_start_session_creates_row(tmp_path):
@@ -374,9 +379,33 @@ def test_handle_start_missing_args(capsys):
 
 def test_handle_start_rejects_missing_goal(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(tracking, "sessions_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
     tracking.handle(["start", "Nonexistent", "25"])
     captured = capsys.readouterr()
     assert "No goal named 'Nonexistent' found" in captured.out
+
+
+def test_handle_start_refuses_non_priority_goal_once_locked(
+    monkeypatch, capsys, tmp_path
+):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.set_mode("hardcore", db_path=db_path)
+    goals.add_goal("Side Project", 5, db_path=db_path)
+    goals.activate_goal("Side Project", db_path=db_path)
+    capsys.readouterr()
+
+    # Starting a session on the neglected priority goal's sibling is what
+    # should trigger the lock-in check and deactivate the sibling.
+    tracking.handle(["start", "Side", "Project", "25"])
+    captured = capsys.readouterr()
+
+    assert "is not active" in captured.out
+    assert goals.list_goals(db_path=db_path)[1].active is False
 
 
 def test_handle_start_runs_countdown_to_completion(monkeypatch, capsys, tmp_path):

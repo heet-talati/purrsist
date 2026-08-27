@@ -1,7 +1,7 @@
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import NamedTuple
 
@@ -28,6 +28,7 @@ class Goal:
     spent_hours: float = 0.0
     archived_at: str | None = None
     delete_reason: str | None = None
+    deadline: str | None = None
 
     @property
     def remaining_hours(self) -> float:
@@ -113,7 +114,124 @@ def set_mode(mode: str, db_path: Path | None = None) -> tuple[list[Goal], list[G
     return deactivated, reactivated
 
 
-def add_goal(name: str, hours: float, db_path: Path | None = None) -> Goal:
+class LockInStatus(NamedTuple):
+    locked: bool
+    goal_name: str | None
+    recent_pace: float | None
+    required_pace: float | None
+
+
+def _priority_goal_row(conn: sqlite3.Connection) -> tuple | None:
+    return conn.execute(
+        "SELECT id, name, hours, deadline, "
+        "COALESCE((SELECT SUM(focused_seconds) FROM sessions "
+        "WHERE sessions.goal_id = goals.id "
+        "AND sessions.status IN ('completed', 'cancelled')), 0) "
+        "FROM goals WHERE active = 1 AND priority = 1 "
+        "AND archived_at IS NULL AND deadline IS NOT NULL"
+    ).fetchone()
+
+
+def refresh_lock_in(db_path: Path | None = None) -> LockInStatus:
+    """Recompute the lock-in trigger for the priority-1 active goal (if it
+    has a deadline) and persist the result, auto-locking or auto-unlocking
+    on a transition.
+
+    Evaluated at most once per calendar day: re-checking on every call would
+    immediately undo a same-day manual `unlock` the moment pace is still
+    behind, defeating the point of an intentional override. The next
+    automatic re-evaluation happens the following day.
+    """
+    conn = _connect(db_path)
+    try:
+        was_locked, checked_on = conn.execute(
+            "SELECT lock_in_locked, lock_in_checked_on FROM app_settings WHERE id = 1"
+        ).fetchone()
+        was_locked = bool(was_locked)
+        today = datetime.now(UTC).date().isoformat()
+
+        row = _priority_goal_row(conn)
+        if row is None:
+            # Nothing to evaluate (no priority-1 goal with a deadline) --
+            # clear a stale lock, but don't stamp lock_in_checked_on: no
+            # real evaluation happened, so today's slot isn't used up. That
+            # matters because `_refuse_if_locked` runs on every mutating
+            # goal command, including the one that's still in the middle of
+            # activating the very goal being evaluated here (not active
+            # yet) -- an early no-op check must not suppress the real
+            # evaluation once that goal is actually in place.
+            if was_locked:
+                conn.execute("UPDATE app_settings SET lock_in_locked = 0 WHERE id = 1")
+                conn.commit()
+            return LockInStatus(False, None, None, None)
+
+        if checked_on == today:
+            return LockInStatus(was_locked, row[1] if was_locked else None, None, None)
+
+        goal_id, goal_name, hours, deadline, spent_seconds = row
+        remaining_hours = hours - spent_seconds / 3600
+        recent_pace = required_pace = None
+        new_locked = False
+
+        if remaining_hours > 0:
+            days_left = (date.fromisoformat(deadline) - datetime.now(UTC).date()).days
+            required_pace = (
+                remaining_hours / days_left if days_left > 0 else float("inf")
+            )
+
+            cutoff = (datetime.now(UTC) - timedelta(days=4)).isoformat()
+            recent_seconds = conn.execute(
+                "SELECT COALESCE(SUM(focused_seconds), 0) FROM sessions "
+                "WHERE goal_id = ? AND status IN ('completed', 'cancelled') "
+                "AND started_at >= ?",
+                (goal_id, cutoff),
+            ).fetchone()[0]
+            recent_pace = (recent_seconds / 3600) / 4
+            new_locked = recent_pace < required_pace
+
+        conn.execute(
+            "UPDATE app_settings SET lock_in_locked = ?, lock_in_checked_on = ? "
+            "WHERE id = 1",
+            (int(new_locked), today),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    if new_locked and not was_locked:
+        set_mode("lock_in", db_path=db_path)
+
+    return LockInStatus(
+        new_locked, goal_name if new_locked else None, recent_pace, required_pace
+    )
+
+
+def unlock(reason: str, db_path: Path | None = None) -> None:
+    reason = reason.strip()
+    if not reason:
+        raise GoalError("A reason is required to unlock.")
+
+    conn = _connect(db_path)
+    try:
+        locked = conn.execute(
+            "SELECT lock_in_locked FROM app_settings WHERE id = 1"
+        ).fetchone()[0]
+        if not locked:
+            raise GoalError("Not currently locked.")
+
+        conn.execute(
+            "UPDATE app_settings SET lock_in_locked = 0, lock_in_checked_on = ? "
+            "WHERE id = 1",
+            (datetime.now(UTC).date().isoformat(),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def add_goal(
+    name: str, hours: float, deadline: str | None = None, db_path: Path | None = None
+) -> Goal:
     name = name.strip()
     if not name:
         raise GoalError("Goal name cannot be empty.")
@@ -124,9 +242,9 @@ def add_goal(name: str, hours: float, db_path: Path | None = None) -> Goal:
     conn = _connect(db_path)
     try:
         cursor = conn.execute(
-            "INSERT INTO goals (name, hours, active, priority, created_at) "
-            "VALUES (?, ?, 0, NULL, ?)",
-            (name, hours, created_at),
+            "INSERT INTO goals (name, hours, active, priority, created_at, deadline) "
+            "VALUES (?, ?, 0, NULL, ?, ?)",
+            (name, hours, created_at, deadline),
         )
         conn.commit()
     except sqlite3.IntegrityError as exc:
@@ -134,14 +252,20 @@ def add_goal(name: str, hours: float, db_path: Path | None = None) -> Goal:
     finally:
         conn.close()
 
-    return Goal(id=cursor.lastrowid, name=name, hours=hours, created_at=created_at)
+    return Goal(
+        id=cursor.lastrowid,
+        name=name,
+        hours=hours,
+        created_at=created_at,
+        deadline=deadline,
+    )
 
 
 def list_goals(db_path: Path | None = None) -> list[Goal]:
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            "SELECT id, name, hours, active, priority, created_at, "
+            "SELECT id, name, hours, active, priority, created_at, deadline, "
             "COALESCE((SELECT SUM(focused_seconds) FROM sessions "
             "WHERE sessions.goal_id = goals.id "
             "AND sessions.status IN ('completed', 'cancelled')), 0) "
@@ -159,7 +283,8 @@ def list_goals(db_path: Path | None = None) -> list[Goal]:
             active=bool(row[3]),
             priority=row[4],
             created_at=row[5],
-            spent_hours=row[6] / 3600,
+            deadline=row[6],
+            spent_hours=row[7] / 3600,
         )
         for row in rows
     ]
@@ -411,13 +536,39 @@ def move_goal(name: str, direction: str, db_path: Path | None = None) -> None:
         conn.close()
 
 
+def _parse_deadline_token(token: str) -> str | None:
+    try:
+        days = int(token)
+    except ValueError:
+        pass
+    else:
+        return (datetime.now(UTC).date() + timedelta(days=days)).isoformat()
+
+    try:
+        return date.fromisoformat(token).isoformat()
+    except ValueError:
+        return None
+
+
+def _parse_add_args(options: list[str]) -> tuple[str, str, str | None]:
+    hours_raw, *rest = options
+    name_tokens = rest
+    deadline = None
+    if len(rest) > 1:
+        *candidate_name_tokens, last = rest
+        parsed = _parse_deadline_token(last)
+        if parsed is not None:
+            deadline = parsed
+            name_tokens = candidate_name_tokens
+    return hours_raw, " ".join(name_tokens), deadline
+
+
 def _handle_add(options: list[str]) -> None:
     if len(options) < 2:
-        print_cli("[error] Usage: goal add <hours> <name>")
+        print_cli("[error] Usage: goal add <hours> <name> [days|date]")
         return
 
-    hours_raw, *name_parts = options
-    name = " ".join(name_parts)
+    hours_raw, name, deadline = _parse_add_args(options)
 
     try:
         hours = float(hours_raw)
@@ -426,20 +577,38 @@ def _handle_add(options: list[str]) -> None:
         return
 
     try:
-        goal = add_goal(name, hours)
+        goal = add_goal(name, hours, deadline)
     except GoalError as exc:
         print_cli(f"[error] {exc}")
         return
 
-    print_cli(f"✓ Added goal '{goal.name}' ({goal.hours}h)")
+    deadline_str = f", due {goal.deadline}" if goal.deadline else ""
+    print_cli(f"✓ Added goal '{goal.name}' ({goal.hours}h{deadline_str})")
+
+
+def _refuse_if_locked(db_path: Path | None = None) -> bool:
+    status = refresh_lock_in(db_path)
+    if status.locked:
+        print_cli(
+            f"[error] Locked in on '{status.goal_name}' -- falling behind pace. "
+            f"Use 'goal unlock <reason>' to override."
+        )
+    return status.locked
 
 
 def _handle_list(options: list[str]) -> None:
+    status = refresh_lock_in()
     all_goals = list_goals()
     archived_goals = list_archived_goals()
     if not all_goals and not archived_goals:
         print_cli("No goals yet. Add one with 'goal add <hours> <name>'.")
         return
+
+    if status.locked:
+        print_cli(
+            f"🔒 Locked in on '{status.goal_name}' — falling behind pace. "
+            f"Use 'goal unlock <reason>' to override."
+        )
 
     active = [g for g in all_goals if g.active]
     inactive = [g for g in all_goals if not g.active]
@@ -530,6 +699,8 @@ def _handle_priority(options: list[str]) -> None:
     if not options:
         print_cli("[error] Usage: goal priority <name>")
         return
+    if _refuse_if_locked():
+        return
 
     name = " ".join(options)
     try:
@@ -565,6 +736,8 @@ def _handle_deactivate(options: list[str]) -> None:
     if not options:
         print_cli("[error] Usage: goal deactivate <name>")
         return
+    if _refuse_if_locked():
+        return
 
     name = " ".join(options)
     try:
@@ -598,6 +771,8 @@ def _handle_mode(options: list[str]) -> None:
         mode = get_mode()
         print_cli(f"Current mode: {mode} (max {MODE_LIMITS[mode]} active goal(s))")
         return
+    if _refuse_if_locked():
+        return
 
     mode = options[0]
     try:
@@ -613,6 +788,21 @@ def _handle_mode(options: list[str]) -> None:
         print_cli(f"- '{goal.name}' reactivated (priority {goal.priority})", 2)
 
 
+def _handle_unlock(options: list[str]) -> None:
+    if not options:
+        print_cli("[error] Usage: goal unlock <reason>")
+        return
+
+    reason = " ".join(options)
+    try:
+        unlock(reason)
+    except GoalError as exc:
+        print_cli(f"[error] {exc}")
+        return
+
+    print_cli("✓ Unlocked. You can change modes and priorities again today.")
+
+
 def _handle_help(options: list[str]) -> None:
     print_cli("Available goal subcommands:")
     for name, subcommand in GOAL_SUBCOMMANDS.items():
@@ -625,7 +815,9 @@ class _Subcommand(NamedTuple):
 
 
 GOAL_SUBCOMMANDS = {
-    "add": _Subcommand("Add a new goal: goal add <hours> <name>", _handle_add),
+    "add": _Subcommand(
+        "Add a new goal: goal add <hours> <name> [days|date]", _handle_add
+    ),
     "list": _Subcommand("List all goals", _handle_list),
     "delete": _Subcommand(
         "Archive an inactive goal (prompts for a reason): goal delete <name>",
@@ -642,6 +834,9 @@ GOAL_SUBCOMMANDS = {
     "mode": _Subcommand(
         "View or set the active-goal mode: goal mode [lock_in|hardcore|relaxed]",
         _handle_mode,
+    ),
+    "unlock": _Subcommand(
+        "Override the lock-in trigger for today: goal unlock <reason>", _handle_unlock
     ),
     "help": _Subcommand("List available goal subcommands", _handle_help),
 }
