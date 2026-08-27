@@ -61,6 +61,7 @@ def test_handle_help_lists_subcommands(capsys):
     goals.handle(["help"])
     captured = capsys.readouterr()
     assert "add:" in captured.out
+    assert "update:" in captured.out
     assert "list:" in captured.out
     assert "delete:" in captured.out
     assert "restore:" in captured.out
@@ -234,7 +235,7 @@ def test_handle_delete_not_found(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["delete", "Nonexistent"])
     captured = capsys.readouterr()
-    assert "No goal named 'Nonexistent' found" in captured.out
+    assert "No goal 'Nonexistent' found" in captured.out
 
 
 def test_handle_delete_blocks_active_goal_without_prompting(
@@ -289,7 +290,7 @@ def test_handle_restore_not_found(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["restore", "Nonexistent"])
     captured = capsys.readouterr()
-    assert "No archived goal named 'Nonexistent' found" in captured.out
+    assert "No archived goal 'Nonexistent' found" in captured.out
 
 
 def test_list_goals_empty(tmp_path):
@@ -1063,3 +1064,345 @@ def test_handle_unlock_success(monkeypatch, capsys, tmp_path):
     goals.handle(["mode", "relaxed"])
     captured = capsys.readouterr()
     assert "Mode set to 'relaxed'" in captured.out
+
+
+# --- goal update ---
+
+
+def test_update_goal_renames(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+
+    updated = goals.update_goal("Learn Rust", "name", "Learn Zig", db_path=db_path)
+    assert updated.name == "Learn Zig"
+    assert goals.list_goals(db_path=db_path)[0].name == "Learn Zig"
+
+
+def test_update_goal_rename_rejects_empty(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    with pytest.raises(goals.GoalError):
+        goals.update_goal("Learn Rust", "name", "   ", db_path=db_path)
+
+
+def test_update_goal_rename_rejects_duplicate_case_insensitive(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.add_goal("Learn Zig", 5, db_path=db_path)
+    with pytest.raises(goals.GoalError):
+        goals.update_goal("Learn Rust", "name", "learn zig", db_path=db_path)
+
+
+def test_update_goal_changes_hours(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+
+    updated = goals.update_goal("Learn Rust", "hours", "30", db_path=db_path)
+    assert updated.hours == 30
+    assert goals.list_goals(db_path=db_path)[0].hours == 30
+
+
+def test_update_goal_hours_rejects_non_positive(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    with pytest.raises(goals.GoalError):
+        goals.update_goal("Learn Rust", "hours", "0", db_path=db_path)
+
+
+def test_update_goal_hours_rejects_invalid_number(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    with pytest.raises(goals.GoalError):
+        goals.update_goal("Learn Rust", "hours", "abc", db_path=db_path)
+
+
+def test_update_goal_sets_deadline(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+
+    updated = goals.update_goal("Learn Rust", "deadline", "2026-12-01", db_path=db_path)
+    assert updated.deadline == "2026-12-01"
+
+
+def test_update_goal_clears_deadline_with_none(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, "2026-12-01", db_path=db_path)
+
+    updated = goals.update_goal("Learn Rust", "deadline", "none", db_path=db_path)
+    assert updated.deadline is None
+
+
+def test_update_goal_deadline_rejects_invalid_token(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    with pytest.raises(goals.GoalError):
+        goals.update_goal("Learn Rust", "deadline", "not-a-date", db_path=db_path)
+
+
+def test_update_goal_rejects_unknown_field(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    with pytest.raises(goals.GoalError):
+        goals.update_goal("Learn Rust", "priority", "1", db_path=db_path)
+
+
+def test_update_goal_rejects_missing_name(tmp_path):
+    db_path = tmp_path / "test.db"
+    with pytest.raises(goals.GoalError):
+        goals.update_goal("Nonexistent", "hours", "10", db_path=db_path)
+
+
+def test_update_goal_hours_forces_lock_in_recheck(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    assert goals.refresh_lock_in(db_path=db_path).locked is True
+
+    # Same-day cache would normally keep reporting locked -- but lowering
+    # the target down to what's already been spent (goal effectively met)
+    # should unlock immediately.
+    _insert_session(db_path, goal.id, "completed", 2 * 3600)
+    goals.update_goal("Learn Rust", "hours", "2", db_path=db_path)
+    assert goals.refresh_lock_in(db_path=db_path).locked is False
+
+
+def test_update_goal_deadline_clear_forces_lock_in_recheck(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    assert goals.refresh_lock_in(db_path=db_path).locked is True
+
+    goals.update_goal("Learn Rust", "deadline", "none", db_path=db_path)
+    assert goals.refresh_lock_in(db_path=db_path).locked is False
+
+
+def test_parse_update_args_splits_multi_word_name():
+    parsed = goals._parse_update_args(["Learn", "Rust", "hours", "30"])
+    assert parsed == ("Learn Rust", "hours", "30")
+
+
+def test_parse_update_args_joins_multi_word_value_for_name_field():
+    parsed = goals._parse_update_args(["Learn", "Rust", "name", "Learn", "Zig"])
+    assert parsed == ("Learn Rust", "name", "Learn Zig")
+
+
+def test_parse_update_args_returns_none_without_field_keyword():
+    assert goals._parse_update_args(["Learn", "Rust"]) is None
+
+
+def test_handle_update_missing_args(capsys):
+    goals.handle(["update", "Learn", "Rust"])
+    captured = capsys.readouterr()
+    assert "[error] Usage: goal update" in captured.out
+
+
+def test_handle_update_missing_value(capsys):
+    goals.handle(["update", "Learn", "Rust", "hours"])
+    captured = capsys.readouterr()
+    assert "[error] Usage: goal update" in captured.out
+
+
+def test_handle_update_rename_success(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["add", "20", "Learn", "Rust"])
+    capsys.readouterr()
+
+    goals.handle(["update", "Learn", "Rust", "name", "Learn", "Zig"])
+    captured = capsys.readouterr()
+    assert "Renamed 'Learn Rust' to 'Learn Zig'" in captured.out
+
+
+def test_handle_update_hours_success(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["add", "20", "Learn", "Rust"])
+    capsys.readouterr()
+
+    goals.handle(["update", "Learn", "Rust", "hours", "30"])
+    captured = capsys.readouterr()
+    assert "'Learn Rust' target updated to 30.00h" in captured.out
+
+
+def test_handle_update_deadline_success(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["add", "20", "Learn", "Rust"])
+    capsys.readouterr()
+
+    goals.handle(["update", "Learn", "Rust", "deadline", "2026-12-01"])
+    captured = capsys.readouterr()
+    assert "'Learn Rust' deadline set to 2026-12-01" in captured.out
+
+
+def test_handle_update_not_found(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["update", "Nonexistent", "hours", "10"])
+    captured = capsys.readouterr()
+    assert "No goal 'Nonexistent' found" in captured.out
+
+
+def test_handle_update_hours_blocked_when_locked(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+    capsys.readouterr()
+
+    goals.handle(["update", "Learn", "Rust", "hours", "0.01"])
+    captured = capsys.readouterr()
+    assert "Locked in on 'Learn Rust'" in captured.out
+    assert goals.list_goals(db_path=db_path)[0].hours == 20
+
+
+def test_handle_update_rename_allowed_when_locked(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+    capsys.readouterr()
+
+    goals.handle(["update", "Learn", "Rust", "name", "Learn", "Zig"])
+    captured = capsys.readouterr()
+    assert "Renamed 'Learn Rust' to 'Learn Zig'" in captured.out
+
+
+# --- goal ids & numeric name guard ---
+
+
+def test_add_goal_rejects_numeric_name(tmp_path):
+    db_path = tmp_path / "test.db"
+    with pytest.raises(goals.GoalError):
+        goals.add_goal("123", 20, db_path=db_path)
+
+
+def test_update_goal_rename_rejects_numeric_name(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    with pytest.raises(goals.GoalError):
+        goals.update_goal("Learn Rust", "name", "42", db_path=db_path)
+
+
+def test_find_goal_by_id(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 20, db_path=db_path)
+    found = goals.find_goal(str(goal.id), db_path=db_path)
+    assert found is not None
+    assert found.name == "Learn Rust"
+
+
+def test_find_goal_by_name_case_insensitive(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    found = goals.find_goal("learn rust", db_path=db_path)
+    assert found is not None
+    assert found.name == "Learn Rust"
+
+
+def test_find_goal_returns_none_when_missing(tmp_path):
+    db_path = tmp_path / "test.db"
+    assert goals.find_goal("999", db_path=db_path) is None
+    assert goals.find_goal("Nonexistent", db_path=db_path) is None
+
+
+def test_delete_goal_accepts_id(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 20, db_path=db_path)
+    deleted = goals.delete_goal(str(goal.id), "reason", db_path=db_path)
+    assert deleted.name == "Learn Rust"
+
+
+def test_restore_goal_accepts_id(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.delete_goal(str(goal.id), "reason", db_path=db_path)
+    restored = goals.restore_goal(str(goal.id), db_path=db_path)
+    assert restored.name == "Learn Rust"
+
+
+def test_activate_goal_accepts_id(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 20, db_path=db_path)
+    activated = goals.activate_goal(str(goal.id), db_path=db_path)
+    assert activated.active is True
+
+
+def test_deactivate_goal_accepts_id(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.activate_goal(str(goal.id), db_path=db_path)
+    deactivated = goals.deactivate_goal(str(goal.id), db_path=db_path)
+    assert deactivated.active is False
+
+
+def test_move_goal_accepts_id(tmp_path):
+    db_path = tmp_path / "test.db"
+    a = goals.add_goal("A", 5, db_path=db_path)
+    goals.add_goal("B", 5, db_path=db_path)
+    goals.activate_goal("A", db_path=db_path)
+    goals.activate_goal("B", db_path=db_path)
+
+    goals.move_goal(str(a.id), "down", db_path=db_path)
+
+    active = {g.name: g.priority for g in goals.list_goals(db_path=db_path)}
+    assert active == {"B": 1, "A": 2}
+
+
+def test_update_goal_accepts_id(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 20, db_path=db_path)
+    updated = goals.update_goal(str(goal.id), "hours", "30", db_path=db_path)
+    assert updated.hours == 30
+
+
+def test_handle_list_shows_goal_id(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goal = goals.add_goal("Learn Rust", 20, db_path=db_path)
+
+    goals.handle(["list"])
+    captured = capsys.readouterr()
+    assert f"[{goal.id}] Learn Rust" in captured.out
+
+
+def test_handle_delete_accepts_id(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.handle(["add", "20", "Learn", "Rust"])
+    goal = goals.list_goals(db_path=db_path)[0]
+    capsys.readouterr()
+
+    monkeypatch.setattr("builtins.input", lambda _: "reason")
+    goals.handle(["delete", str(goal.id)])
+    captured = capsys.readouterr()
+    assert "Archived goal 'Learn Rust'" in captured.out
+
+
+def test_handle_priority_accepts_id(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.handle(["add", "20", "Learn", "Rust"])
+    goal = goals.list_goals(db_path=db_path)[0]
+    capsys.readouterr()
+
+    goals.handle(["priority", str(goal.id)])
+    captured = capsys.readouterr()
+    assert "'Learn Rust' is now active (priority 1)" in captured.out
+
+
+def test_handle_update_accepts_id(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.handle(["add", "20", "Learn", "Rust"])
+    goal = goals.list_goals(db_path=db_path)[0]
+    capsys.readouterr()
+
+    goals.handle(["update", str(goal.id), "hours", "30"])
+    captured = capsys.readouterr()
+    assert "'Learn Rust' target updated to 30.00h" in captured.out
+
+
+def test_handle_add_rejects_numeric_name(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["add", "20", "123"])
+    captured = capsys.readouterr()
+    assert "cannot be a number" in captured.out

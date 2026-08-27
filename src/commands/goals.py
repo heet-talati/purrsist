@@ -55,6 +55,17 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     return db.connect(path)
 
 
+def _identifier_clause(identifier: str) -> tuple[str, str | int]:
+    """A goal identifier is its id if purely numeric, else its name.
+
+    Goal names are barred from being purely numeric (see `add_goal`), so
+    there's no ambiguity between the two.
+    """
+    if identifier.isdigit():
+        return "id = ?", int(identifier)
+    return "name = ? COLLATE NOCASE", identifier
+
+
 def get_mode(db_path: Path | None = None) -> str:
     conn = _connect(db_path)
     try:
@@ -235,6 +246,8 @@ def add_goal(
     name = name.strip()
     if not name:
         raise GoalError("Goal name cannot be empty.")
+    if name.isdigit():
+        raise GoalError("Goal name cannot be a number -- numbers are used as goal ids.")
     if hours <= 0:
         raise GoalError("Hours must be a positive number.")
 
@@ -313,23 +326,54 @@ def list_archived_goals(db_path: Path | None = None) -> list[Goal]:
     ]
 
 
-def delete_goal(name: str, reason: str, db_path: Path | None = None) -> Goal:
-    name = name.strip()
-    if not name:
+def find_goal(identifier: str, db_path: Path | None = None) -> Goal | None:
+    identifier = identifier.strip()
+    clause, param = _identifier_clause(identifier)
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id, name, hours, active, priority, created_at, deadline, "
+            "COALESCE((SELECT SUM(focused_seconds) FROM sessions "
+            "WHERE sessions.goal_id = goals.id "
+            "AND sessions.status IN ('completed', 'cancelled')), 0) "
+            f"FROM goals WHERE {clause} AND archived_at IS NULL",
+            (param,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return None
+    return Goal(
+        id=row[0],
+        name=row[1],
+        hours=row[2],
+        active=bool(row[3]),
+        priority=row[4],
+        created_at=row[5],
+        deadline=row[6],
+        spent_hours=row[7] / 3600,
+    )
+
+
+def delete_goal(identifier: str, reason: str, db_path: Path | None = None) -> Goal:
+    identifier = identifier.strip()
+    if not identifier:
         raise GoalError("Goal name cannot be empty.")
     reason = reason.strip()
     if not reason:
         raise GoalError("A reason is required to delete a goal.")
 
+    clause, param = _identifier_clause(identifier)
     conn = _connect(db_path)
     try:
         row = conn.execute(
             "SELECT id, name, hours, active, priority, created_at "
-            "FROM goals WHERE name = ? COLLATE NOCASE AND archived_at IS NULL",
-            (name,),
+            f"FROM goals WHERE {clause} AND archived_at IS NULL",
+            (param,),
         ).fetchone()
         if row is None:
-            raise GoalError(f"No goal named '{name}' found.")
+            raise GoalError(f"No goal '{identifier}' found.")
         if row[3]:  # active
             raise GoalError(
                 f"'{row[1]}' is active. Deactivate it first with "
@@ -357,20 +401,21 @@ def delete_goal(name: str, reason: str, db_path: Path | None = None) -> Goal:
     )
 
 
-def restore_goal(name: str, db_path: Path | None = None) -> Goal:
-    name = name.strip()
-    if not name:
+def restore_goal(identifier: str, db_path: Path | None = None) -> Goal:
+    identifier = identifier.strip()
+    if not identifier:
         raise GoalError("Goal name cannot be empty.")
 
+    clause, param = _identifier_clause(identifier)
     conn = _connect(db_path)
     try:
         row = conn.execute(
             "SELECT id, name, hours, created_at "
-            "FROM goals WHERE name = ? COLLATE NOCASE AND archived_at IS NOT NULL",
-            (name,),
+            f"FROM goals WHERE {clause} AND archived_at IS NOT NULL",
+            (param,),
         ).fetchone()
         if row is None:
-            raise GoalError(f"No archived goal named '{name}' found.")
+            raise GoalError(f"No archived goal '{identifier}' found.")
 
         conn.execute(
             "UPDATE goals SET archived_at = NULL, delete_reason = NULL WHERE id = ?",
@@ -381,6 +426,103 @@ def restore_goal(name: str, db_path: Path | None = None) -> Goal:
         conn.close()
 
     return Goal(id=row[0], name=row[1], hours=row[2], created_at=row[3])
+
+
+_UPDATE_FIELDS = ("name", "hours", "deadline")
+
+
+def update_goal(
+    identifier: str, field: str, value: str, db_path: Path | None = None
+) -> Goal:
+    identifier = identifier.strip()
+    if not identifier:
+        raise GoalError("Goal name cannot be empty.")
+    if field not in _UPDATE_FIELDS:
+        raise GoalError(
+            f"Unknown field '{field}'. Choose from: {', '.join(_UPDATE_FIELDS)}."
+        )
+
+    clause, param = _identifier_clause(identifier)
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id, name, hours, active, priority, created_at, deadline "
+            f"FROM goals WHERE {clause} AND archived_at IS NULL",
+            (param,),
+        ).fetchone()
+        if row is None:
+            raise GoalError(f"No goal '{identifier}' found.")
+        goal_id, current_name, hours, active, priority, created_at, deadline = row
+
+        if field == "name":
+            new_name = value.strip()
+            if not new_name:
+                raise GoalError("Goal name cannot be empty.")
+            if new_name.isdigit():
+                raise GoalError(
+                    "Goal name cannot be a number -- numbers are used as goal ids."
+                )
+            try:
+                conn.execute(
+                    "UPDATE goals SET name = ? WHERE id = ?", (new_name, goal_id)
+                )
+            except sqlite3.IntegrityError as exc:
+                raise GoalError(f"A goal named '{new_name}' already exists.") from exc
+            current_name = new_name
+        elif field == "hours":
+            try:
+                new_hours = float(value)
+            except ValueError:
+                raise GoalError(f"'{value}' is not a valid number of hours.") from None
+            if new_hours <= 0:
+                raise GoalError("Hours must be a positive number.")
+            conn.execute(
+                "UPDATE goals SET hours = ? WHERE id = ?", (new_hours, goal_id)
+            )
+            hours = new_hours
+        else:  # deadline
+            if value.strip().lower() == "none":
+                new_deadline = None
+            else:
+                new_deadline = _parse_deadline_token(value.strip())
+                if new_deadline is None:
+                    raise GoalError(
+                        f"'{value}' is not a valid deadline "
+                        "(use a day count, YYYY-MM-DD, or 'none')."
+                    )
+            conn.execute(
+                "UPDATE goals SET deadline = ? WHERE id = ?", (new_deadline, goal_id)
+            )
+            deadline = new_deadline
+
+        # A pace-affecting edit (hours or deadline) to the goal the lock-in
+        # trigger is currently watching must be reflected immediately --
+        # otherwise the once-a-day cache in refresh_lock_in would keep
+        # reporting yesterday's (now stale) lock state until tomorrow.
+        force_recheck = (
+            field in ("hours", "deadline") and bool(active) and priority == 1
+        )
+        if force_recheck:
+            conn.execute(
+                "UPDATE app_settings SET lock_in_checked_on = NULL WHERE id = 1"
+            )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    if force_recheck:
+        refresh_lock_in(db_path)
+
+    return Goal(
+        id=goal_id,
+        name=current_name,
+        hours=hours,
+        active=bool(active),
+        priority=priority,
+        created_at=created_at,
+        deadline=deadline,
+    )
 
 
 class SlotsFullError(GoalError):
@@ -400,20 +542,21 @@ def _row_to_goal(row: tuple) -> Goal:
     )
 
 
-def activate_goal(name: str, db_path: Path | None = None) -> Goal:
-    name = name.strip()
-    if not name:
+def activate_goal(identifier: str, db_path: Path | None = None) -> Goal:
+    identifier = identifier.strip()
+    if not identifier:
         raise GoalError("Goal name cannot be empty.")
 
+    clause, param = _identifier_clause(identifier)
     conn = _connect(db_path)
     try:
         row = conn.execute(
             "SELECT id, name, hours, active, priority, created_at "
-            "FROM goals WHERE name = ? COLLATE NOCASE AND archived_at IS NULL",
-            (name,),
+            f"FROM goals WHERE {clause} AND archived_at IS NULL",
+            (param,),
         ).fetchone()
         if row is None:
-            raise GoalError(f"No goal named '{name}' found.")
+            raise GoalError(f"No goal '{identifier}' found.")
 
         goal = _row_to_goal(row)
         if goal.active:
@@ -463,20 +606,21 @@ def _renumber_active(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE goals SET priority = ? WHERE id = ?", (rank, goal_id))
 
 
-def deactivate_goal(name: str, db_path: Path | None = None) -> Goal:
-    name = name.strip()
-    if not name:
+def deactivate_goal(identifier: str, db_path: Path | None = None) -> Goal:
+    identifier = identifier.strip()
+    if not identifier:
         raise GoalError("Goal name cannot be empty.")
 
+    clause, param = _identifier_clause(identifier)
     conn = _connect(db_path)
     try:
         row = conn.execute(
             "SELECT id, name, hours, active, priority, created_at "
-            "FROM goals WHERE name = ? COLLATE NOCASE AND archived_at IS NULL",
-            (name,),
+            f"FROM goals WHERE {clause} AND archived_at IS NULL",
+            (param,),
         ).fetchone()
         if row is None:
-            raise GoalError(f"No goal named '{name}' found.")
+            raise GoalError(f"No goal '{identifier}' found.")
         if not row[3]:
             raise GoalError(f"'{row[1]}' is not active.")
 
@@ -498,23 +642,24 @@ def deactivate_goal(name: str, db_path: Path | None = None) -> Goal:
     )
 
 
-def move_goal(name: str, direction: str, db_path: Path | None = None) -> None:
+def move_goal(identifier: str, direction: str, db_path: Path | None = None) -> None:
     if direction not in ("up", "down"):
         raise GoalError("Direction must be 'up' or 'down'.")
 
+    clause, param = _identifier_clause(identifier.strip())
     conn = _connect(db_path)
     try:
         row = conn.execute(
             "SELECT id, priority, active FROM goals "
-            "WHERE name = ? COLLATE NOCASE AND archived_at IS NULL",
-            (name,),
+            f"WHERE {clause} AND archived_at IS NULL",
+            (param,),
         ).fetchone()
         if row is None:
-            raise GoalError(f"No goal named '{name}' found.")
+            raise GoalError(f"No goal '{identifier}' found.")
 
         goal_id, priority, active = row
         if not active:
-            raise GoalError(f"'{name}' is not active.")
+            raise GoalError(f"'{identifier}' is not active.")
 
         neighbor_priority = priority - 1 if direction == "up" else priority + 1
         neighbor = conn.execute(
@@ -523,7 +668,7 @@ def move_goal(name: str, direction: str, db_path: Path | None = None) -> None:
         ).fetchone()
         if neighbor is None:
             edge = "top" if direction == "up" else "bottom"
-            raise GoalError(f"'{name}' is already at the {edge}.")
+            raise GoalError(f"'{identifier}' is already at the {edge}.")
 
         conn.execute(
             "UPDATE goals SET priority = ? WHERE id = ?", (neighbor_priority, goal_id)
@@ -586,6 +731,46 @@ def _handle_add(options: list[str]) -> None:
     print_cli(f"✓ Added goal '{goal.name}' ({goal.hours}h{deadline_str})")
 
 
+def _parse_update_args(options: list[str]) -> tuple[str, str, str] | None:
+    # `field` is a reserved keyword rather than a fixed position, since the
+    # goal identifier (before it) can be multiple tokens (a multi-word name).
+    for i in range(1, len(options)):
+        if options[i].lower() in _UPDATE_FIELDS:
+            identifier = " ".join(options[:i])
+            field = options[i].lower()
+            value = " ".join(options[i + 1 :])
+            return identifier, field, value
+    return None
+
+
+def _handle_update(options: list[str]) -> None:
+    usage = "[error] Usage: goal update <name|id> <name|hours|deadline> <value>"
+    parsed = _parse_update_args(options)
+    if parsed is None:
+        print_cli(usage)
+        return
+
+    identifier, field, value = parsed
+    if not value:
+        print_cli(usage)
+        return
+    if field in ("hours", "deadline") and _refuse_if_locked():
+        return
+
+    try:
+        goal = update_goal(identifier, field, value)
+    except GoalError as exc:
+        print_cli(f"[error] {exc}")
+        return
+
+    if field == "name":
+        print_cli(f"✓ Renamed '{identifier}' to '{goal.name}'")
+    elif field == "hours":
+        print_cli(f"✓ '{goal.name}' target updated to {goal.hours:.2f}h")
+    else:
+        print_cli(f"✓ '{goal.name}' deadline set to {goal.deadline or 'none'}")
+
+
 def _refuse_if_locked(db_path: Path | None = None) -> bool:
     status = refresh_lock_in(db_path)
     if status.locked:
@@ -629,12 +814,12 @@ def _handle_list(options: list[str]) -> None:
     if archived_goals:
         print_cli("Archived:")
         for goal in archived_goals:
-            print_cli(f"- {goal.name} — {goal.delete_reason}", 2)
+            print_cli(f"- [{goal.id}] {goal.name} — {goal.delete_reason}", 2)
 
 
 def _format_progress(goal: Goal) -> str:
     return (
-        f"{goal.name} ({goal.spent_hours:.2f}h / {goal.hours:.2f}h, "
+        f"[{goal.id}] {goal.name} ({goal.spent_hours:.2f}h / {goal.hours:.2f}h, "
         f"{goal.remaining_hours:.2f}h left)"
     )
 
@@ -651,13 +836,13 @@ def _format_pace(goal: Goal) -> str:
 
 def _handle_delete(options: list[str]) -> None:
     if not options:
-        print_cli("[error] Usage: goal delete <name>")
+        print_cli("[error] Usage: goal delete <name|id>")
         return
 
-    name = " ".join(options)
-    goal = next((g for g in list_goals() if g.name.lower() == name.lower()), None)
+    identifier = " ".join(options)
+    goal = find_goal(identifier)
     if goal is None:
-        print_cli(f"[error] No goal named '{name}' found.")
+        print_cli(f"[error] No goal '{identifier}' found.")
         return
     if goal.active:
         print_cli(
@@ -672,7 +857,7 @@ def _handle_delete(options: list[str]) -> None:
         return
 
     try:
-        deleted = delete_goal(goal.name, reason)
+        deleted = delete_goal(str(goal.id), reason)
     except GoalError as exc:
         print_cli(f"[error] {exc}")
         return
@@ -682,12 +867,12 @@ def _handle_delete(options: list[str]) -> None:
 
 def _handle_restore(options: list[str]) -> None:
     if not options:
-        print_cli("[error] Usage: goal restore <name>")
+        print_cli("[error] Usage: goal restore <name|id>")
         return
 
-    name = " ".join(options)
+    identifier = " ".join(options)
     try:
-        goal = restore_goal(name)
+        goal = restore_goal(identifier)
     except GoalError as exc:
         print_cli(f"[error] {exc}")
         return
@@ -697,14 +882,14 @@ def _handle_restore(options: list[str]) -> None:
 
 def _handle_priority(options: list[str]) -> None:
     if not options:
-        print_cli("[error] Usage: goal priority <name>")
+        print_cli("[error] Usage: goal priority <name|id>")
         return
     if _refuse_if_locked():
         return
 
-    name = " ".join(options)
+    identifier = " ".join(options)
     try:
-        goal = activate_goal(name)
+        goal = activate_goal(identifier)
     except SlotsFullError as exc:
         print_cli(f"[error] {exc}")
         for idx, active_goal in enumerate(exc.active_goals, start=1):
@@ -723,8 +908,8 @@ def _handle_priority(options: list[str]) -> None:
             print_cli("[error] Invalid selection. Cancelled.")
             return
 
-        deactivate_goal(target.name)
-        goal = activate_goal(name)
+        deactivate_goal(str(target.id))
+        goal = activate_goal(identifier)
     except GoalError as exc:
         print_cli(f"[error] {exc}")
         return
@@ -734,14 +919,14 @@ def _handle_priority(options: list[str]) -> None:
 
 def _handle_deactivate(options: list[str]) -> None:
     if not options:
-        print_cli("[error] Usage: goal deactivate <name>")
+        print_cli("[error] Usage: goal deactivate <name|id>")
         return
     if _refuse_if_locked():
         return
 
-    name = " ".join(options)
+    identifier = " ".join(options)
     try:
-        goal = deactivate_goal(name)
+        goal = deactivate_goal(identifier)
     except GoalError as exc:
         print_cli(f"[error] {exc}")
         return
@@ -751,19 +936,19 @@ def _handle_deactivate(options: list[str]) -> None:
 
 def _handle_move(options: list[str]) -> None:
     if len(options) < 2:
-        print_cli("[error] Usage: goal move <name> <up|down>")
+        print_cli("[error] Usage: goal move <name|id> <up|down>")
         return
 
-    *name_parts, direction = options
-    name = " ".join(name_parts)
+    *identifier_parts, direction = options
+    identifier = " ".join(identifier_parts)
 
     try:
-        move_goal(name, direction)
+        move_goal(identifier, direction)
     except GoalError as exc:
         print_cli(f"[error] {exc}")
         return
 
-    print_cli(f"✓ Moved '{name}' {direction}")
+    print_cli(f"✓ Moved '{identifier}' {direction}")
 
 
 def _handle_mode(options: list[str]) -> None:
@@ -818,19 +1003,28 @@ GOAL_SUBCOMMANDS = {
     "add": _Subcommand(
         "Add a new goal: goal add <hours> <name> [days|date]", _handle_add
     ),
+    "update": _Subcommand(
+        "Edit a goal's name, hours, or deadline: "
+        "goal update <name|id> <name|hours|deadline> <value>",
+        _handle_update,
+    ),
     "list": _Subcommand("List all goals", _handle_list),
     "delete": _Subcommand(
-        "Archive an inactive goal (prompts for a reason): goal delete <name>",
+        "Archive an inactive goal (prompts for a reason): goal delete <name|id>",
         _handle_delete,
     ),
     "restore": _Subcommand(
-        "Restore an archived goal to inactive: goal restore <name>", _handle_restore
+        "Restore an archived goal to inactive: goal restore <name|id>", _handle_restore
     ),
-    "priority": _Subcommand("Activate a goal: goal priority <name>", _handle_priority),
+    "priority": _Subcommand(
+        "Activate a goal: goal priority <name|id>", _handle_priority
+    ),
     "deactivate": _Subcommand(
-        "Deactivate a goal: goal deactivate <name>", _handle_deactivate
+        "Deactivate a goal: goal deactivate <name|id>", _handle_deactivate
     ),
-    "move": _Subcommand("Reorder priority: goal move <name> <up|down>", _handle_move),
+    "move": _Subcommand(
+        "Reorder priority: goal move <name|id> <up|down>", _handle_move
+    ),
     "mode": _Subcommand(
         "View or set the active-goal mode: goal mode [lock_in|hardcore|relaxed]",
         _handle_mode,
