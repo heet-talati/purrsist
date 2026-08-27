@@ -2,7 +2,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
-from purrsist.output import print_cli
+from purrsist.output import ICON_LOCKED, print_cli
 
 from .goals_data import (
     DEFAULT_MODE,
@@ -138,7 +138,7 @@ def _refuse_if_locked(db_path: Path | None = None) -> bool:
     status = refresh_lock_in(db_path)
     if status.locked:
         print_cli(
-            f"[error] Locked in on '{status.goal_name}' -- falling behind pace. "
+            f"{ICON_LOCKED} Locked in on '{status.goal_name}' -- falling behind pace. "
             f"Use 'goal unlock <reason>' to override."
         )
     return status.locked
@@ -154,7 +154,7 @@ def _handle_list(options: list[str]) -> None:
 
     if status.locked:
         print_cli(
-            f"🔒 Locked in on '{status.goal_name}' — falling behind pace. "
+            f"{ICON_LOCKED} Locked in on '{status.goal_name}' — falling behind pace. "
             f"Use 'goal unlock <reason>' to override."
         )
 
