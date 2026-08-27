@@ -65,6 +65,13 @@ def render(renderable: RenderableType) -> None:
     _console().print(renderable)
 
 
+def make_console() -> Console:
+    """Public accessor for the shared console config, for callers (e.g. a
+    Live-driven renderer) that need a Console instance directly rather than
+    a one-shot print."""
+    return _console()
+
+
 def print_muted(text: str, padding: int = 1) -> None:
     indent = "  " * padding
     _console().print(Text(indent + text, style=f"{MUTED_STYLE} italic"))
