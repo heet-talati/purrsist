@@ -26,6 +26,8 @@ class Goal:
     created_at: str = ""
     id: int | None = None
     spent_hours: float = 0.0
+    archived_at: str | None = None
+    delete_reason: str | None = None
 
     @property
     def remaining_hours(self) -> float:
@@ -143,7 +145,8 @@ def list_goals(db_path: Path | None = None) -> list[Goal]:
             "COALESCE((SELECT SUM(focused_seconds) FROM sessions "
             "WHERE sessions.goal_id = goals.id "
             "AND sessions.status IN ('completed', 'cancelled')), 0) "
-            "FROM goals ORDER BY active DESC, priority ASC"
+            "FROM goals WHERE archived_at IS NULL "
+            "ORDER BY active DESC, priority ASC"
         ).fetchall()
     finally:
         conn.close()
@@ -162,24 +165,57 @@ def list_goals(db_path: Path | None = None) -> list[Goal]:
     ]
 
 
-def delete_goal(name: str, db_path: Path | None = None) -> Goal:
+def list_archived_goals(db_path: Path | None = None) -> list[Goal]:
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT id, name, hours, created_at, archived_at, delete_reason "
+            "FROM goals WHERE archived_at IS NOT NULL ORDER BY archived_at DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        Goal(
+            id=row[0],
+            name=row[1],
+            hours=row[2],
+            created_at=row[3],
+            archived_at=row[4],
+            delete_reason=row[5],
+        )
+        for row in rows
+    ]
+
+
+def delete_goal(name: str, reason: str, db_path: Path | None = None) -> Goal:
     name = name.strip()
     if not name:
         raise GoalError("Goal name cannot be empty.")
+    reason = reason.strip()
+    if not reason:
+        raise GoalError("A reason is required to delete a goal.")
 
     conn = _connect(db_path)
     try:
         row = conn.execute(
             "SELECT id, name, hours, active, priority, created_at "
-            "FROM goals WHERE name = ? COLLATE NOCASE",
+            "FROM goals WHERE name = ? COLLATE NOCASE AND archived_at IS NULL",
             (name,),
         ).fetchone()
         if row is None:
             raise GoalError(f"No goal named '{name}' found.")
+        if row[3]:  # active
+            raise GoalError(
+                f"'{row[1]}' is active. Deactivate it first with "
+                f"'goal deactivate {row[1]}'."
+            )
 
-        conn.execute("DELETE FROM goals WHERE id = ?", (row[0],))
-        if row[3]:  # was active: close the priority gap it leaves behind
-            _renumber_active(conn)
+        archived_at = datetime.now(UTC).isoformat()
+        conn.execute(
+            "UPDATE goals SET archived_at = ?, delete_reason = ? WHERE id = ?",
+            (archived_at, reason, row[0]),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -188,10 +224,38 @@ def delete_goal(name: str, db_path: Path | None = None) -> Goal:
         id=row[0],
         name=row[1],
         hours=row[2],
-        active=bool(row[3]),
-        priority=row[4],
+        active=False,
+        priority=None,
         created_at=row[5],
+        archived_at=archived_at,
+        delete_reason=reason,
     )
+
+
+def restore_goal(name: str, db_path: Path | None = None) -> Goal:
+    name = name.strip()
+    if not name:
+        raise GoalError("Goal name cannot be empty.")
+
+    conn = _connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id, name, hours, created_at "
+            "FROM goals WHERE name = ? COLLATE NOCASE AND archived_at IS NOT NULL",
+            (name,),
+        ).fetchone()
+        if row is None:
+            raise GoalError(f"No archived goal named '{name}' found.")
+
+        conn.execute(
+            "UPDATE goals SET archived_at = NULL, delete_reason = NULL WHERE id = ?",
+            (row[0],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return Goal(id=row[0], name=row[1], hours=row[2], created_at=row[3])
 
 
 class SlotsFullError(GoalError):
@@ -220,7 +284,7 @@ def activate_goal(name: str, db_path: Path | None = None) -> Goal:
     try:
         row = conn.execute(
             "SELECT id, name, hours, active, priority, created_at "
-            "FROM goals WHERE name = ? COLLATE NOCASE",
+            "FROM goals WHERE name = ? COLLATE NOCASE AND archived_at IS NULL",
             (name,),
         ).fetchone()
         if row is None:
@@ -283,7 +347,7 @@ def deactivate_goal(name: str, db_path: Path | None = None) -> Goal:
     try:
         row = conn.execute(
             "SELECT id, name, hours, active, priority, created_at "
-            "FROM goals WHERE name = ? COLLATE NOCASE",
+            "FROM goals WHERE name = ? COLLATE NOCASE AND archived_at IS NULL",
             (name,),
         ).fetchone()
         if row is None:
@@ -316,7 +380,8 @@ def move_goal(name: str, direction: str, db_path: Path | None = None) -> None:
     conn = _connect(db_path)
     try:
         row = conn.execute(
-            "SELECT id, priority, active FROM goals WHERE name = ? COLLATE NOCASE",
+            "SELECT id, priority, active FROM goals "
+            "WHERE name = ? COLLATE NOCASE AND archived_at IS NULL",
             (name,),
         ).fetchone()
         if row is None:
@@ -371,7 +436,8 @@ def _handle_add(options: list[str]) -> None:
 
 def _handle_list(options: list[str]) -> None:
     all_goals = list_goals()
-    if not all_goals:
+    archived_goals = list_archived_goals()
+    if not all_goals and not archived_goals:
         print_cli("No goals yet. Add one with 'goal add <hours> <name>'.")
         return
 
@@ -390,6 +456,11 @@ def _handle_list(options: list[str]) -> None:
         print_cli("Inactive:")
         for goal in inactive:
             print_cli(f"- {_format_progress(goal)}{_format_pace(goal)}", 2)
+
+    if archived_goals:
+        print_cli("Archived:")
+        for goal in archived_goals:
+            print_cli(f"- {goal.name} — {goal.delete_reason}", 2)
 
 
 def _format_progress(goal: Goal) -> str:
@@ -415,13 +486,44 @@ def _handle_delete(options: list[str]) -> None:
         return
 
     name = " ".join(options)
+    goal = next((g for g in list_goals() if g.name.lower() == name.lower()), None)
+    if goal is None:
+        print_cli(f"[error] No goal named '{name}' found.")
+        return
+    if goal.active:
+        print_cli(
+            f"[error] '{goal.name}' is active. "
+            f"Deactivate it first with 'goal deactivate {goal.name}'."
+        )
+        return
+
+    reason = input(f"  Reason for deleting '{goal.name}'? ").strip()
+    if not reason:
+        print_cli("[error] A reason is required. Cancelled.")
+        return
+
     try:
-        goal = delete_goal(name)
+        deleted = delete_goal(goal.name, reason)
     except GoalError as exc:
         print_cli(f"[error] {exc}")
         return
 
-    print_cli(f"✓ Deleted goal '{goal.name}'")
+    print_cli(f"✓ Archived goal '{deleted.name}'")
+
+
+def _handle_restore(options: list[str]) -> None:
+    if not options:
+        print_cli("[error] Usage: goal restore <name>")
+        return
+
+    name = " ".join(options)
+    try:
+        goal = restore_goal(name)
+    except GoalError as exc:
+        print_cli(f"[error] {exc}")
+        return
+
+    print_cli(f"✓ Restored goal '{goal.name}' (inactive)")
 
 
 def _handle_priority(options: list[str]) -> None:
@@ -525,7 +627,13 @@ class _Subcommand(NamedTuple):
 GOAL_SUBCOMMANDS = {
     "add": _Subcommand("Add a new goal: goal add <hours> <name>", _handle_add),
     "list": _Subcommand("List all goals", _handle_list),
-    "delete": _Subcommand("Delete a goal: goal delete <name>", _handle_delete),
+    "delete": _Subcommand(
+        "Archive an inactive goal (prompts for a reason): goal delete <name>",
+        _handle_delete,
+    ),
+    "restore": _Subcommand(
+        "Restore an archived goal to inactive: goal restore <name>", _handle_restore
+    ),
     "priority": _Subcommand("Activate a goal: goal priority <name>", _handle_priority),
     "deactivate": _Subcommand(
         "Deactivate a goal: goal deactivate <name>", _handle_deactivate
