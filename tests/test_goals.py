@@ -60,17 +60,8 @@ def test_handle_unknown_subcommand(capsys):
 def test_handle_help_lists_subcommands(capsys):
     goals.handle(["help"])
     captured = capsys.readouterr()
-    assert "add:" in captured.out
-    assert "update:" in captured.out
-    assert "list:" in captured.out
-    assert "delete:" in captured.out
-    assert "restore:" in captured.out
-    assert "priority:" in captured.out
-    assert "deactivate:" in captured.out
-    assert "move:" in captured.out
-    assert "mode:" in captured.out
-    assert "unlock:" in captured.out
-    assert "help:" in captured.out
+    for name in goals.GOAL_SUBCOMMANDS:
+        assert name in captured.out
 
 
 def test_handle_add_missing_args(capsys):
@@ -225,7 +216,7 @@ def test_handle_delete_success(monkeypatch, capsys, tmp_path):
     goals.handle(["add", "20", "Learn", "Rust"])
     capsys.readouterr()
 
-    monkeypatch.setattr("builtins.input", lambda _: "lost interest")
+    monkeypatch.setattr("builtins.input", lambda: "lost interest")
     goals.handle(["delete", "Learn", "Rust"])
     captured = capsys.readouterr()
     assert "Archived goal 'Learn Rust'" in captured.out
@@ -246,7 +237,7 @@ def test_handle_delete_blocks_active_goal_without_prompting(
     goals.handle(["priority", "Learn", "Rust"])
     capsys.readouterr()
 
-    def _fail_if_called(_):
+    def _fail_if_called():
         raise AssertionError("should not prompt for a reason on a blocked delete")
 
     monkeypatch.setattr("builtins.input", _fail_if_called)
@@ -261,7 +252,7 @@ def test_handle_delete_blank_reason_cancels(monkeypatch, capsys, tmp_path):
     goals.handle(["add", "20", "Learn", "Rust"])
     capsys.readouterr()
 
-    monkeypatch.setattr("builtins.input", lambda _: "   ")
+    monkeypatch.setattr("builtins.input", lambda: "   ")
     goals.handle(["delete", "Learn", "Rust"])
     captured = capsys.readouterr()
     assert "A reason is required" in captured.out
@@ -277,7 +268,7 @@ def test_handle_restore_missing_args(capsys):
 def test_handle_restore_success(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust"])
-    monkeypatch.setattr("builtins.input", lambda _: "reason")
+    monkeypatch.setattr("builtins.input", lambda: "reason")
     goals.handle(["delete", "Learn", "Rust"])
     capsys.readouterr()
 
@@ -695,7 +686,7 @@ def test_handle_priority_slots_full_cancel(monkeypatch, capsys, tmp_path):
     goals.handle(["priority", "A"])
     capsys.readouterr()
 
-    monkeypatch.setattr("builtins.input", lambda _: "n")
+    monkeypatch.setattr("builtins.input", lambda: "n")
     goals.handle(["priority", "B"])
     captured = capsys.readouterr()
     assert "Cancelled." in captured.out
@@ -711,7 +702,7 @@ def test_handle_priority_slots_full_swap(monkeypatch, capsys, tmp_path):
     goals.handle(["priority", "A"])
     capsys.readouterr()
 
-    monkeypatch.setattr("builtins.input", lambda _: "1")
+    monkeypatch.setattr("builtins.input", lambda: "1")
     goals.handle(["priority", "B"])
     captured = capsys.readouterr()
     assert "'B' is now active (priority 1)" in captured.out
@@ -1382,7 +1373,7 @@ def test_handle_delete_accepts_id(monkeypatch, capsys, tmp_path):
     goal = goals.list_goals(db_path=db_path)[0]
     capsys.readouterr()
 
-    monkeypatch.setattr("builtins.input", lambda _: "reason")
+    monkeypatch.setattr("builtins.input", lambda: "reason")
     goals.handle(["delete", str(goal.id)])
     captured = capsys.readouterr()
     assert "Archived goal 'Learn Rust'" in captured.out

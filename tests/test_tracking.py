@@ -421,8 +421,8 @@ def test_handle_unknown_subcommand(capsys):
 def test_handle_help_lists_subcommands(capsys):
     tracking.handle(["help"])
     captured = capsys.readouterr()
-    assert "start:" in captured.out
-    assert "help:" in captured.out
+    for name in tracking.TRACK_SUBCOMMANDS:
+        assert name in captured.out
 
 
 def test_handle_start_missing_args(capsys):

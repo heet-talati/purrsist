@@ -1,9 +1,11 @@
 import sys
 import time
+from collections.abc import Mapping
 
 from rich.console import Console, RenderableType
 from rich.live import Live
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 SUCCESS_STYLE = "bold #4FD1AE"
@@ -35,6 +37,12 @@ def _console() -> Console:
     is_tty = sys.stdout.isatty()
     return Console(
         highlight=False,
+        # We never use Rich's `[style]...[/style]` markup syntax -- only
+        # explicit `style=` kwargs and Text.stylize(). Disabling it means
+        # arbitrary data (goal names, descriptions, delete reasons) can't
+        # have literal square brackets like "[lock_in|hardcore|relaxed]"
+        # silently swallowed as (invalid) markup tags.
+        markup=False,
         force_terminal=is_tty,
         legacy_windows=False,
         # Non-tty output (piped, redirected, captured in tests) can't report a
@@ -75,6 +83,16 @@ def make_console() -> Console:
 def print_muted(text: str, padding: int = 1) -> None:
     indent = "  " * padding
     _console().print(Text(indent + text, style=f"{MUTED_STYLE} italic"))
+
+
+def print_help_table(title: str, items: Mapping[str, str]) -> None:
+    """2-column (command, description) help table shared by every `help` subcommand."""
+    table = Table(title=title, title_style=PRIMARY_STYLE, box=None)
+    table.add_column("Command", style=PRIMARY_STYLE)
+    table.add_column("Description", style=MUTED_STYLE)
+    for name, description in items.items():
+        table.add_row(name, description)
+    render(table)
 
 
 _LOCK_IN_REVEAL_STYLES = ["#5C4526", "#A97A3D", WARNING_STYLE]

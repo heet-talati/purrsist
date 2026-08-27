@@ -4,13 +4,16 @@ from typing import NamedTuple
 
 from rich.console import RenderableType
 from rich.progress_bar import ProgressBar
+from rich.prompt import Prompt
 from rich.table import Table
 
 from purrsist.output import (
     ICON_LOCKED,
     MUTED_STYLE,
     PRIMARY_STYLE,
+    make_console,
     print_cli,
+    print_help_table,
     print_muted,
     print_warning_panel,
     render,
@@ -246,7 +249,9 @@ def _handle_delete(options: list[str]) -> None:
         )
         return
 
-    reason = input(f"  Reason for deleting '{goal.name}'? ").strip()
+    reason = Prompt.ask(
+        f"  Reason for deleting '{goal.name}'", console=make_console()
+    ).strip()
     if not reason:
         print_cli("[error] A reason is required. Cancelled.")
         return
@@ -290,8 +295,9 @@ def _handle_priority(options: list[str]) -> None:
         for idx, active_goal in enumerate(exc.active_goals, start=1):
             print_cli(f"{idx}. {active_goal.name} (priority {active_goal.priority})", 2)
 
-        choice = input(
-            "  Deactivate which one to make room? (number, or 'n' to cancel): "
+        choice = Prompt.ask(
+            "  Deactivate which one to make room? (number, or 'n' to cancel)",
+            console=make_console(),
         ).strip()
         if choice.lower() == "n":
             print_cli("Cancelled.")
@@ -384,9 +390,10 @@ def _handle_unlock(options: list[str]) -> None:
 
 
 def _handle_help(options: list[str]) -> None:
-    print_cli("Available goal subcommands:")
-    for name, subcommand in GOAL_SUBCOMMANDS.items():
-        print_cli(f"- {name}: {subcommand.description}", 2)
+    print_help_table(
+        "Available goal subcommands:",
+        {name: subcommand.description for name, subcommand in GOAL_SUBCOMMANDS.items()},
+    )
 
 
 class _Subcommand(NamedTuple):

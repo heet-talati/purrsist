@@ -2,7 +2,7 @@ from importlib.metadata import version
 
 from commands import goals, tracking
 
-from .output import ICON_STREAK, print_cli, print_panel
+from .output import ICON_STREAK, print_cli, print_help_table, print_panel
 
 # Global Variables
 APP_VERSION = version("purrsist")
@@ -58,15 +58,10 @@ def show_version(options=None):
 def show_help(options=None):
     if options_handler(options, "help"):
         return
-    print_cli("Available commands:")
-    for command, info in COMMANDS.items():
-        description = info["description"]
-        options = info["options"]
-
-        print_cli(f"  - {command}: {description}")
-        if options:
-            for option in options:
-                print_cli(f"-{option}", 3)
+    print_help_table(
+        "Available commands:",
+        {command: info["description"] for command, info in COMMANDS.items()},
+    )
 
 
 # Command Registry

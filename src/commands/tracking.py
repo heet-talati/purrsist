@@ -11,12 +11,16 @@ from rich.text import Text
 from commands import goals
 from purrsist.output import (
     ERROR_STYLE,
+    ICON_BELL,
     ICON_PAUSE,
+    ICON_PLAY,
+    ICON_STOP,
     MUTED_STYLE,
     SUCCESS_STYLE,
     WARNING_STYLE,
     make_console,
     print_cli,
+    print_help_table,
 )
 
 from .tracking_data import (
@@ -285,7 +289,7 @@ def _handle_start(options: list[str]) -> None:
         resume_session(session_id, delta)
 
     print_cli(
-        f"▶ Tracking '{session.goal_name}' for {minutes:g} min. "
+        f"{ICON_PLAY} Tracking '{session.goal_name}' for {minutes:g} min. "
         f"Press '{PAUSE_KEY}' to pause, '{QUIT_KEY}' to stop early "
         f"(Ctrl+C also works)."
     )
@@ -300,7 +304,7 @@ def _handle_start(options: list[str]) -> None:
         )
         actual_str = _format_remaining(cancelled.focused_seconds or 0)
         print_cli(
-            f"■ Stopped '{cancelled.goal_name}' early — "
+            f"{ICON_STOP} Stopped '{cancelled.goal_name}' early — "
             f"{actual_str} focused (planned {planned_str})"
         )
     else:
@@ -315,15 +319,19 @@ def _print_completion_banner(goal_name: str, actual_str: str, planned_str: str) 
     print("\a", end="", flush=True)
     border = "=" * 50
     print_cli(border, 0)
-    print_cli(f"\U0001f514 TIME'S UP! Session complete for '{goal_name}'", 0)
+    print_cli(f"{ICON_BELL} TIME'S UP! Session complete for '{goal_name}'", 0)
     print_cli(f"{actual_str} focused (planned {planned_str})", 0)
     print_cli(border, 0)
 
 
 def _handle_help(options: list[str]) -> None:
-    print_cli("Available track subcommands:")
-    for name, subcommand in TRACK_SUBCOMMANDS.items():
-        print_cli(f"- {name}: {subcommand.description}", 2)
+    print_help_table(
+        "Available track subcommands:",
+        {
+            name: subcommand.description
+            for name, subcommand in TRACK_SUBCOMMANDS.items()
+        },
+    )
 
 
 class _Subcommand(NamedTuple):
