@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from commands import goals
+from commands import goals, goals_data
 
 
 def test_add_goal_creates_row(tmp_path):
@@ -80,21 +80,21 @@ def test_handle_add_missing_args(capsys):
 
 
 def test_handle_add_invalid_hours(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "abc", "Learn", "Rust"])
     captured = capsys.readouterr()
     assert "is not a valid number of hours" in captured.out
 
 
 def test_handle_add_success(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust"])
     captured = capsys.readouterr()
     assert "Added goal 'Learn Rust'" in captured.out
 
 
 def test_handle_add_duplicate(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust"])
     capsys.readouterr()
     goals.handle(["add", "5", "Learn", "Rust"])
@@ -221,7 +221,7 @@ def test_handle_delete_missing_args(capsys):
 
 
 def test_handle_delete_success(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust"])
     capsys.readouterr()
 
@@ -232,7 +232,7 @@ def test_handle_delete_success(monkeypatch, capsys, tmp_path):
 
 
 def test_handle_delete_not_found(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["delete", "Nonexistent"])
     captured = capsys.readouterr()
     assert "No goal 'Nonexistent' found" in captured.out
@@ -241,7 +241,7 @@ def test_handle_delete_not_found(monkeypatch, capsys, tmp_path):
 def test_handle_delete_blocks_active_goal_without_prompting(
     monkeypatch, capsys, tmp_path
 ):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust"])
     goals.handle(["priority", "Learn", "Rust"])
     capsys.readouterr()
@@ -257,7 +257,7 @@ def test_handle_delete_blocks_active_goal_without_prompting(
 
 
 def test_handle_delete_blank_reason_cancels(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust"])
     capsys.readouterr()
 
@@ -275,7 +275,7 @@ def test_handle_restore_missing_args(capsys):
 
 
 def test_handle_restore_success(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust"])
     monkeypatch.setattr("builtins.input", lambda _: "reason")
     goals.handle(["delete", "Learn", "Rust"])
@@ -287,7 +287,7 @@ def test_handle_restore_success(monkeypatch, capsys, tmp_path):
 
 
 def test_handle_restore_not_found(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["restore", "Nonexistent"])
     captured = capsys.readouterr()
     assert "No archived goal 'Nonexistent' found" in captured.out
@@ -387,7 +387,7 @@ def test_avg_hours_per_day_is_zero_with_no_time_spent(tmp_path):
 
 def test_handle_list_shows_pace_and_projected_completion(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     two_days_ago = (datetime.now(UTC) - timedelta(days=2)).isoformat()
     _insert_goal_with_created_at(db_path, "Learn Rust", 10, two_days_ago)
     goal_id = goals.list_goals(db_path=db_path)[0].id
@@ -401,7 +401,7 @@ def test_handle_list_shows_pace_and_projected_completion(monkeypatch, capsys, tm
 
 
 def test_handle_list_shows_no_pace_yet_with_no_sessions(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "10", "Learn", "Rust"])
     capsys.readouterr()
 
@@ -413,7 +413,7 @@ def test_handle_list_shows_no_pace_yet_with_no_sessions(monkeypatch, capsys, tmp
 
 def test_handle_list_shows_goal_reached_when_target_met(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.handle(["add", "1", "Learn", "Rust"])
     capsys.readouterr()
     goal_id = goals.list_goals(db_path=db_path)[0].id
@@ -426,7 +426,7 @@ def test_handle_list_shows_goal_reached_when_target_met(monkeypatch, capsys, tmp
 
 
 def test_handle_list_empty(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["list"])
     captured = capsys.readouterr()
     assert "No goals yet" in captured.out
@@ -434,7 +434,7 @@ def test_handle_list_empty(monkeypatch, capsys, tmp_path):
 
 def test_handle_list_shows_active_and_inactive_sections(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.add_goal("Learn Rust", 20, db_path=db_path)
     goals.add_goal("Learn Go", 10, db_path=db_path)
 
@@ -457,7 +457,7 @@ def test_handle_list_shows_active_and_inactive_sections(monkeypatch, capsys, tmp
 
 def test_handle_list_shows_archived_section(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.add_goal("Learn Rust", 20, db_path=db_path)
     goals.delete_goal("Learn Rust", "lost interest", db_path=db_path)
 
@@ -472,7 +472,7 @@ def test_handle_list_shows_only_archived_without_no_goals_message(
     monkeypatch, capsys, tmp_path
 ):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.add_goal("Learn Rust", 20, db_path=db_path)
     goals.delete_goal("Learn Rust", "lost interest", db_path=db_path)
 
@@ -668,7 +668,7 @@ def test_move_goal_rejects_inactive(tmp_path):
 
 
 def test_handle_priority_activates_goal(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust"])
     capsys.readouterr()
 
@@ -678,7 +678,7 @@ def test_handle_priority_activates_goal(monkeypatch, capsys, tmp_path):
 
 
 def test_handle_priority_slots_full_cancel(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["mode", "lock_in"])
     goals.handle(["add", "5", "A"])
     goals.handle(["add", "5", "B"])
@@ -694,7 +694,7 @@ def test_handle_priority_slots_full_cancel(monkeypatch, capsys, tmp_path):
 
 
 def test_handle_priority_slots_full_swap(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["mode", "lock_in"])
     goals.handle(["add", "5", "A"])
     goals.handle(["add", "5", "B"])
@@ -711,7 +711,7 @@ def test_handle_priority_slots_full_swap(monkeypatch, capsys, tmp_path):
 
 
 def test_handle_deactivate_success(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust"])
     goals.handle(["priority", "Learn", "Rust"])
     capsys.readouterr()
@@ -722,7 +722,7 @@ def test_handle_deactivate_success(monkeypatch, capsys, tmp_path):
 
 
 def test_handle_move_success(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "5", "A"])
     goals.handle(["add", "5", "B"])
     goals.handle(["priority", "A"])
@@ -735,14 +735,14 @@ def test_handle_move_success(monkeypatch, capsys, tmp_path):
 
 
 def test_handle_mode_shows_current_mode(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["mode"])
     captured = capsys.readouterr()
     assert "Current mode: relaxed" in captured.out
 
 
 def test_handle_mode_sets_mode(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["mode", "hardcore"])
     captured = capsys.readouterr()
     assert "Mode set to 'hardcore'" in captured.out
@@ -795,7 +795,7 @@ def test_add_goal_stores_deadline(tmp_path):
 
 
 def test_handle_add_with_deadline_shows_due_date(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust", "2026-12-01"])
     captured = capsys.readouterr()
     assert "due 2026-12-01" in captured.out
@@ -971,7 +971,7 @@ def test_unlock_preserves_for_rest_of_day(tmp_path):
 
 def test_handle_mode_blocked_when_locked(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
     goals.activate_goal("Learn Rust", db_path=db_path)
     goals.refresh_lock_in(db_path=db_path)
@@ -985,7 +985,7 @@ def test_handle_mode_blocked_when_locked(monkeypatch, capsys, tmp_path):
 
 def test_handle_mode_read_only_allowed_when_locked(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
     goals.activate_goal("Learn Rust", db_path=db_path)
     goals.refresh_lock_in(db_path=db_path)
@@ -998,7 +998,7 @@ def test_handle_mode_read_only_allowed_when_locked(monkeypatch, capsys, tmp_path
 
 def test_handle_priority_blocked_when_locked(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
     goals.activate_goal("Learn Rust", db_path=db_path)
     goals.add_goal("Side Project", 5, db_path=db_path)
@@ -1013,7 +1013,7 @@ def test_handle_priority_blocked_when_locked(monkeypatch, capsys, tmp_path):
 
 def test_handle_deactivate_blocked_when_locked(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
     goals.activate_goal("Learn Rust", db_path=db_path)
     goals.refresh_lock_in(db_path=db_path)
@@ -1027,7 +1027,7 @@ def test_handle_deactivate_blocked_when_locked(monkeypatch, capsys, tmp_path):
 
 def test_handle_list_shows_lock_banner(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
     goals.activate_goal("Learn Rust", db_path=db_path)
 
@@ -1043,7 +1043,7 @@ def test_handle_unlock_missing_args(capsys):
 
 
 def test_handle_unlock_not_locked(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["unlock", "reason"])
     captured = capsys.readouterr()
     assert "Not currently locked" in captured.out
@@ -1051,7 +1051,7 @@ def test_handle_unlock_not_locked(monkeypatch, capsys, tmp_path):
 
 def test_handle_unlock_success(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
     goals.activate_goal("Learn Rust", db_path=db_path)
     goals.refresh_lock_in(db_path=db_path)
@@ -1203,7 +1203,7 @@ def test_handle_update_missing_value(capsys):
 
 
 def test_handle_update_rename_success(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust"])
     capsys.readouterr()
 
@@ -1213,7 +1213,7 @@ def test_handle_update_rename_success(monkeypatch, capsys, tmp_path):
 
 
 def test_handle_update_hours_success(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust"])
     capsys.readouterr()
 
@@ -1223,7 +1223,7 @@ def test_handle_update_hours_success(monkeypatch, capsys, tmp_path):
 
 
 def test_handle_update_deadline_success(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust"])
     capsys.readouterr()
 
@@ -1233,7 +1233,7 @@ def test_handle_update_deadline_success(monkeypatch, capsys, tmp_path):
 
 
 def test_handle_update_not_found(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["update", "Nonexistent", "hours", "10"])
     captured = capsys.readouterr()
     assert "No goal 'Nonexistent' found" in captured.out
@@ -1241,7 +1241,7 @@ def test_handle_update_not_found(monkeypatch, capsys, tmp_path):
 
 def test_handle_update_hours_blocked_when_locked(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
     goals.activate_goal("Learn Rust", db_path=db_path)
     goals.refresh_lock_in(db_path=db_path)
@@ -1255,7 +1255,7 @@ def test_handle_update_hours_blocked_when_locked(monkeypatch, capsys, tmp_path):
 
 def test_handle_update_rename_allowed_when_locked(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
     goals.activate_goal("Learn Rust", db_path=db_path)
     goals.refresh_lock_in(db_path=db_path)
@@ -1356,7 +1356,7 @@ def test_update_goal_accepts_id(tmp_path):
 
 def test_handle_list_shows_goal_id(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goal = goals.add_goal("Learn Rust", 20, db_path=db_path)
 
     goals.handle(["list"])
@@ -1366,7 +1366,7 @@ def test_handle_list_shows_goal_id(monkeypatch, capsys, tmp_path):
 
 def test_handle_delete_accepts_id(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.handle(["add", "20", "Learn", "Rust"])
     goal = goals.list_goals(db_path=db_path)[0]
     capsys.readouterr()
@@ -1379,7 +1379,7 @@ def test_handle_delete_accepts_id(monkeypatch, capsys, tmp_path):
 
 def test_handle_priority_accepts_id(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.handle(["add", "20", "Learn", "Rust"])
     goal = goals.list_goals(db_path=db_path)[0]
     capsys.readouterr()
@@ -1391,7 +1391,7 @@ def test_handle_priority_accepts_id(monkeypatch, capsys, tmp_path):
 
 def test_handle_update_accepts_id(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     goals.handle(["add", "20", "Learn", "Rust"])
     goal = goals.list_goals(db_path=db_path)[0]
     capsys.readouterr()
@@ -1402,7 +1402,7 @@ def test_handle_update_accepts_id(monkeypatch, capsys, tmp_path):
 
 
 def test_handle_add_rejects_numeric_name(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "123"])
     captured = capsys.readouterr()
     assert "cannot be a number" in captured.out
