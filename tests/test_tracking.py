@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from commands import goals, tracking
+from commands import goals, goals_data, tracking, tracking_data
 
 
 def _add_active_goal(db_path, name="Learn Rust", hours=20):
@@ -378,8 +378,8 @@ def test_handle_start_missing_args(capsys):
 
 
 def test_handle_start_rejects_missing_goal(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(tracking, "sessions_db_path", lambda: tmp_path / "test.db")
-    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
     tracking.handle(["start", "Nonexistent", "25"])
     captured = capsys.readouterr()
     assert "No goal named 'Nonexistent' found" in captured.out
@@ -389,8 +389,8 @@ def test_handle_start_refuses_non_priority_goal_once_locked(
     monkeypatch, capsys, tmp_path
 ):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(tracking, "sessions_db_path", lambda: db_path)
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
 
     goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
     goals.activate_goal("Learn Rust", db_path=db_path)
@@ -410,8 +410,8 @@ def test_handle_start_refuses_non_priority_goal_once_locked(
 
 def test_handle_start_runs_countdown_to_completion(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(tracking, "sessions_db_path", lambda: db_path)
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     _add_active_goal(db_path)
 
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
@@ -432,8 +432,8 @@ def test_handle_start_runs_countdown_to_completion(monkeypatch, capsys, tmp_path
 
 def test_handle_start_accepts_preset_name(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(tracking, "sessions_db_path", lambda: db_path)
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     _add_active_goal(db_path)
 
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
@@ -453,8 +453,8 @@ def test_handle_start_ctrl_c_has_no_bell_or_completion_banner(
     monkeypatch, capsys, tmp_path
 ):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(tracking, "sessions_db_path", lambda: db_path)
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     _add_active_goal(db_path)
 
     def _raise(_):
@@ -471,8 +471,8 @@ def test_handle_start_ctrl_c_has_no_bell_or_completion_banner(
 
 def test_handle_start_ctrl_c_cancels_session(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(tracking, "sessions_db_path", lambda: db_path)
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     _add_active_goal(db_path)
 
     def _raise(_):
@@ -495,8 +495,8 @@ def test_handle_start_quit_key_cancels_session_with_summary(
     monkeypatch, capsys, tmp_path
 ):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(tracking, "sessions_db_path", lambda: db_path)
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     _add_active_goal(db_path)
 
     keys = iter(["q"])
@@ -517,8 +517,8 @@ def test_handle_start_quit_key_cancels_session_with_summary(
 
 def test_handle_start_pause_then_resume_completes(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
-    monkeypatch.setattr(tracking, "sessions_db_path", lambda: db_path)
-    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     _add_active_goal(db_path)
 
     keys = iter(["p", "p", None, None, None])
