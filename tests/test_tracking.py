@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -8,6 +9,10 @@ from commands import goals, tracking
 def _add_active_goal(db_path, name="Learn Rust", hours=20):
     goals.add_goal(name, hours, db_path=db_path)
     return goals.activate_goal(name, db_path=db_path)
+
+
+def _days_from_now(n):
+    return (datetime.now(UTC).date() + timedelta(days=n)).isoformat()
 
 
 def test_start_session_creates_row(tmp_path):
@@ -74,14 +79,17 @@ def test_complete_session_marks_completed(tmp_path):
 
     assert completed.status == "completed"
     assert completed.ended_at is not None
+    assert completed.focused_seconds == 25 * 60
 
     conn = sqlite3.connect(db_path)
     row = conn.execute(
-        "SELECT status, ended_at FROM sessions WHERE id = ?", (session.id,)
+        "SELECT status, ended_at, focused_seconds FROM sessions WHERE id = ?",
+        (session.id,),
     ).fetchone()
     conn.close()
     assert row[0] == "completed"
     assert row[1] is not None
+    assert row[2] == 25 * 60
 
 
 def test_complete_session_rejects_missing_session(tmp_path):
@@ -100,6 +108,18 @@ def test_complete_session_rejects_already_completed(tmp_path):
         tracking.complete_session(session.id, db_path=db_path)
 
 
+def test_complete_session_subtracts_paused_seconds_from_focused_time(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.pause_session(session.id, db_path=db_path)
+    tracking.resume_session(session.id, 90, db_path=db_path)
+
+    completed = tracking.complete_session(session.id, db_path=db_path)
+
+    assert completed.focused_seconds == 25 * 60 - 90
+
+
 def test_cancel_session_marks_cancelled(tmp_path):
     db_path = tmp_path / "test.db"
     _add_active_goal(db_path)
@@ -109,6 +129,34 @@ def test_cancel_session_marks_cancelled(tmp_path):
 
     assert cancelled.status == "cancelled"
     assert cancelled.ended_at is not None
+    assert cancelled.focused_seconds == 25 * 60
+
+
+def test_cancel_session_accounts_for_remaining_and_paused_time(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.pause_session(session.id, db_path=db_path)
+    tracking.resume_session(session.id, 60, db_path=db_path)
+
+    cancelled = tracking.cancel_session(session.id, 300, db_path=db_path)
+
+    assert cancelled.focused_seconds == 25 * 60 - 300 - 60
+
+
+def test_cancel_session_total_paused_seconds_overrides_db_column(tmp_path):
+    # A quit-while-paused folds the in-progress pause segment into the
+    # countdown's in-memory total before it's ever persisted via resume, so
+    # the caller's live total must win over the (stale) DB column.
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.pause_session(session.id, db_path=db_path)  # never resumed
+
+    cancelled = tracking.cancel_session(session.id, 0, 10, db_path=db_path)
+
+    assert cancelled.paused_seconds == 10
+    assert cancelled.focused_seconds == 25 * 60 - 10
 
 
 def test_run_countdown_ticks_down_to_zero():
@@ -331,9 +379,33 @@ def test_handle_start_missing_args(capsys):
 
 def test_handle_start_rejects_missing_goal(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(tracking, "sessions_db_path", lambda: tmp_path / "test.db")
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
     tracking.handle(["start", "Nonexistent", "25"])
     captured = capsys.readouterr()
     assert "No goal named 'Nonexistent' found" in captured.out
+
+
+def test_handle_start_refuses_non_priority_goal_once_locked(
+    monkeypatch, capsys, tmp_path
+):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.set_mode("hardcore", db_path=db_path)
+    goals.add_goal("Side Project", 5, db_path=db_path)
+    goals.activate_goal("Side Project", db_path=db_path)
+    capsys.readouterr()
+
+    # Starting a session on the neglected priority goal's sibling is what
+    # should trigger the lock-in check and deactivate the sibling.
+    tracking.handle(["start", "Side", "Project", "25"])
+    captured = capsys.readouterr()
+
+    assert "is not active" in captured.out
+    assert goals.list_goals(db_path=db_path)[1].active is False
 
 
 def test_handle_start_runs_countdown_to_completion(monkeypatch, capsys, tmp_path):

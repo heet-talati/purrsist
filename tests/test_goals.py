@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -62,10 +63,12 @@ def test_handle_help_lists_subcommands(capsys):
     assert "add:" in captured.out
     assert "list:" in captured.out
     assert "delete:" in captured.out
+    assert "restore:" in captured.out
     assert "priority:" in captured.out
     assert "deactivate:" in captured.out
     assert "move:" in captured.out
     assert "mode:" in captured.out
+    assert "unlock:" in captured.out
     assert "help:" in captured.out
 
 
@@ -98,63 +101,116 @@ def test_handle_add_duplicate(monkeypatch, capsys, tmp_path):
     assert "already exists" in captured.out
 
 
-def test_delete_goal_removes_row(tmp_path):
+def test_delete_goal_archives_row(tmp_path):
     db_path = tmp_path / "test.db"
     goal = goals.add_goal("Learn Rust", 20, db_path=db_path)
 
-    deleted = goals.delete_goal("Learn Rust", db_path=db_path)
+    deleted = goals.delete_goal("Learn Rust", "lost interest", db_path=db_path)
     assert deleted.id == goal.id
+    assert deleted.delete_reason == "lost interest"
+    assert deleted.archived_at is not None
 
     conn = sqlite3.connect(db_path)
-    row = conn.execute("SELECT id FROM goals WHERE id = ?", (goal.id,)).fetchone()
+    row = conn.execute(
+        "SELECT archived_at, delete_reason FROM goals WHERE id = ?", (goal.id,)
+    ).fetchone()
     conn.close()
-    assert row is None
+    assert row[0] is not None
+    assert row[1] == "lost interest"
 
 
 def test_delete_goal_is_case_insensitive(tmp_path):
     db_path = tmp_path / "test.db"
     goals.add_goal("Learn Rust", 20, db_path=db_path)
-    deleted = goals.delete_goal("learn rust", db_path=db_path)
+    deleted = goals.delete_goal("learn rust", "reason", db_path=db_path)
     assert deleted.name == "Learn Rust"
 
 
 def test_delete_goal_rejects_missing_name(tmp_path):
     db_path = tmp_path / "test.db"
     with pytest.raises(goals.GoalError):
-        goals.delete_goal("Nonexistent", db_path=db_path)
+        goals.delete_goal("Nonexistent", "reason", db_path=db_path)
 
 
-def test_delete_active_goal_closes_priority_gap(tmp_path):
+def test_delete_goal_rejects_blank_reason(tmp_path):
     db_path = tmp_path / "test.db"
-    goals.add_goal("A", 10, db_path=db_path)
-    goals.add_goal("B", 10, db_path=db_path)
-    goals.add_goal("C", 10, db_path=db_path)
-    goals.activate_goal("A", db_path=db_path)  # priority 1
-    goals.activate_goal("B", db_path=db_path)  # priority 2
-    goals.activate_goal("C", db_path=db_path)  # priority 3
-
-    goals.delete_goal("B", db_path=db_path)
-
-    conn = sqlite3.connect(db_path)
-    rows = conn.execute(
-        "SELECT name, priority FROM goals WHERE active = 1 ORDER BY priority"
-    ).fetchall()
-    conn.close()
-    assert rows == [("A", 1), ("C", 2)]
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    with pytest.raises(goals.GoalError):
+        goals.delete_goal("Learn Rust", "   ", db_path=db_path)
 
 
-def test_delete_inactive_goal_does_not_touch_active_priorities(tmp_path):
+def test_delete_goal_rejects_active_goal(tmp_path):
     db_path = tmp_path / "test.db"
-    goals.add_goal("A", 10, db_path=db_path)
-    goals.add_goal("B", 10, db_path=db_path)
-    goals.activate_goal("A", db_path=db_path)  # priority 1
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
 
-    goals.delete_goal("B", db_path=db_path)
+    with pytest.raises(goals.GoalError):
+        goals.delete_goal("Learn Rust", "reason", db_path=db_path)
 
-    conn = sqlite3.connect(db_path)
-    row = conn.execute("SELECT priority FROM goals WHERE name = 'A'").fetchone()
-    conn.close()
-    assert row == (1,)
+
+def test_delete_goal_rejects_already_archived(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.delete_goal("Learn Rust", "first reason", db_path=db_path)
+
+    with pytest.raises(goals.GoalError):
+        goals.delete_goal("Learn Rust", "second reason", db_path=db_path)
+
+
+def test_list_goals_excludes_archived(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.delete_goal("Learn Rust", "reason", db_path=db_path)
+
+    assert goals.list_goals(db_path=db_path) == []
+
+
+def test_list_archived_goals_returns_reason(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.delete_goal("Learn Rust", "lost interest", db_path=db_path)
+
+    archived = goals.list_archived_goals(db_path=db_path)
+    assert len(archived) == 1
+    assert archived[0].name == "Learn Rust"
+    assert archived[0].delete_reason == "lost interest"
+
+
+def test_restore_goal_moves_back_to_inactive(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.delete_goal("Learn Rust", "reason", db_path=db_path)
+
+    restored = goals.restore_goal("Learn Rust", db_path=db_path)
+    assert restored.active is False
+
+    assert goals.list_archived_goals(db_path=db_path) == []
+    visible = goals.list_goals(db_path=db_path)
+    assert len(visible) == 1
+    assert visible[0].name == "Learn Rust"
+    assert visible[0].archived_at is None
+
+
+def test_restore_goal_rejects_non_archived_name(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    with pytest.raises(goals.GoalError):
+        goals.restore_goal("Learn Rust", db_path=db_path)
+
+
+def test_restore_goal_rejects_missing_name(tmp_path):
+    db_path = tmp_path / "test.db"
+    with pytest.raises(goals.GoalError):
+        goals.restore_goal("Nonexistent", db_path=db_path)
+
+
+def test_activate_goal_rejects_archived_name(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.delete_goal("Learn Rust", "reason", db_path=db_path)
+
+    with pytest.raises(goals.GoalError):
+        goals.activate_goal("Learn Rust", db_path=db_path)
 
 
 def test_handle_delete_missing_args(capsys):
@@ -167,9 +223,11 @@ def test_handle_delete_success(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
     goals.handle(["add", "20", "Learn", "Rust"])
     capsys.readouterr()
+
+    monkeypatch.setattr("builtins.input", lambda _: "lost interest")
     goals.handle(["delete", "Learn", "Rust"])
     captured = capsys.readouterr()
-    assert "Deleted goal 'Learn Rust'" in captured.out
+    assert "Archived goal 'Learn Rust'" in captured.out
 
 
 def test_handle_delete_not_found(monkeypatch, capsys, tmp_path):
@@ -177,6 +235,61 @@ def test_handle_delete_not_found(monkeypatch, capsys, tmp_path):
     goals.handle(["delete", "Nonexistent"])
     captured = capsys.readouterr()
     assert "No goal named 'Nonexistent' found" in captured.out
+
+
+def test_handle_delete_blocks_active_goal_without_prompting(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["add", "20", "Learn", "Rust"])
+    goals.handle(["priority", "Learn", "Rust"])
+    capsys.readouterr()
+
+    def _fail_if_called(_):
+        raise AssertionError("should not prompt for a reason on a blocked delete")
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+    goals.handle(["delete", "Learn", "Rust"])
+    captured = capsys.readouterr()
+    assert "is active" in captured.out
+    assert "deactivate" in captured.out
+
+
+def test_handle_delete_blank_reason_cancels(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["add", "20", "Learn", "Rust"])
+    capsys.readouterr()
+
+    monkeypatch.setattr("builtins.input", lambda _: "   ")
+    goals.handle(["delete", "Learn", "Rust"])
+    captured = capsys.readouterr()
+    assert "A reason is required" in captured.out
+    assert goals.list_goals(db_path=tmp_path / "test.db")[0].name == "Learn Rust"
+
+
+def test_handle_restore_missing_args(capsys):
+    goals.handle(["restore"])
+    captured = capsys.readouterr()
+    assert "[error] Usage: goal restore" in captured.out
+
+
+def test_handle_restore_success(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["add", "20", "Learn", "Rust"])
+    monkeypatch.setattr("builtins.input", lambda _: "reason")
+    goals.handle(["delete", "Learn", "Rust"])
+    capsys.readouterr()
+
+    goals.handle(["restore", "Learn", "Rust"])
+    captured = capsys.readouterr()
+    assert "Restored goal 'Learn Rust'" in captured.out
+
+
+def test_handle_restore_not_found(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["restore", "Nonexistent"])
+    captured = capsys.readouterr()
+    assert "No archived goal named 'Nonexistent' found" in captured.out
 
 
 def test_list_goals_empty(tmp_path):
@@ -198,6 +311,117 @@ def test_list_goals_orders_active_before_inactive_and_by_priority(tmp_path):
 
     result = [g.name for g in goals.list_goals(db_path=db_path)]
     assert result == ["High", "Low", "Inactive"]
+
+
+def _insert_session(
+    db_path, goal_id, status, focused_seconds, started_at="2026-01-01T00:00:00"
+):
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO sessions (goal_id, planned_minutes, started_at, status, "
+        "focused_seconds) VALUES (?, 25, ?, ?, ?)",
+        (goal_id, started_at, status, focused_seconds),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_list_goals_sums_completed_and_cancelled_session_time(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 10, db_path=db_path)
+    _insert_session(db_path, goal.id, "completed", 3600)
+    _insert_session(db_path, goal.id, "cancelled", 1800)
+
+    result = goals.list_goals(db_path=db_path)[0]
+    assert result.spent_hours == 1.5
+    assert result.remaining_hours == 8.5
+
+
+def test_list_goals_ignores_running_and_paused_sessions(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 10, db_path=db_path)
+    _insert_session(db_path, goal.id, "running", 0)
+    _insert_session(db_path, goal.id, "paused", 0)
+
+    result = goals.list_goals(db_path=db_path)[0]
+    assert result.spent_hours == 0.0
+
+
+def test_list_goals_defaults_spent_hours_to_zero_with_no_sessions(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 10, db_path=db_path)
+
+    result = goals.list_goals(db_path=db_path)[0]
+    assert result.spent_hours == 0.0
+    assert result.remaining_hours == 10
+
+
+def _insert_goal_with_created_at(db_path, name, hours, created_at):
+    goal = goals.add_goal(name, hours, db_path=db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE goals SET created_at = ? WHERE id = ?", (created_at, goal.id))
+    conn.commit()
+    conn.close()
+
+
+def test_avg_hours_per_day_divides_spent_by_elapsed_days(tmp_path):
+    db_path = tmp_path / "test.db"
+    two_days_ago = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    _insert_goal_with_created_at(db_path, "Learn Rust", 10, two_days_ago)
+    goal_id = goals.list_goals(db_path=db_path)[0].id
+    _insert_session(db_path, goal_id, "completed", 4 * 3600)  # 4h spent
+
+    goal = goals.list_goals(db_path=db_path)[0]
+    assert goal.avg_hours_per_day == pytest.approx(2.0, rel=0.01)
+
+
+def test_avg_hours_per_day_is_zero_with_no_time_spent(tmp_path):
+    db_path = tmp_path / "test.db"
+    two_days_ago = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    _insert_goal_with_created_at(db_path, "Learn Rust", 10, two_days_ago)
+
+    goal = goals.list_goals(db_path=db_path)[0]
+    assert goal.avg_hours_per_day == 0.0
+
+
+def test_handle_list_shows_pace_and_projected_completion(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    two_days_ago = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    _insert_goal_with_created_at(db_path, "Learn Rust", 10, two_days_ago)
+    goal_id = goals.list_goals(db_path=db_path)[0].id
+    _insert_session(db_path, goal_id, "completed", 4 * 3600)  # 4h spent, 2h/day avg
+
+    goals.handle(["list"])
+    captured = capsys.readouterr()
+
+    assert "avg 2.00h/day" in captured.out
+    assert "~3.0 days to finish" in captured.out  # 6h remaining / 2h/day
+
+
+def test_handle_list_shows_no_pace_yet_with_no_sessions(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["add", "10", "Learn", "Rust"])
+    capsys.readouterr()
+
+    goals.handle(["list"])
+    captured = capsys.readouterr()
+
+    assert "no pace yet" in captured.out
+
+
+def test_handle_list_shows_goal_reached_when_target_met(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.handle(["add", "1", "Learn", "Rust"])
+    capsys.readouterr()
+    goal_id = goals.list_goals(db_path=db_path)[0].id
+    _insert_session(db_path, goal_id, "completed", 3600)  # 1h spent == 1h target
+
+    goals.handle(["list"])
+    captured = capsys.readouterr()
+
+    assert "goal reached" in captured.out
 
 
 def test_handle_list_empty(monkeypatch, capsys, tmp_path):
@@ -222,9 +446,39 @@ def test_handle_list_shows_active_and_inactive_sections(monkeypatch, capsys, tmp
     captured = capsys.readouterr()
 
     assert "Active:" in captured.out
-    assert "Learn Rust (20.0h) [priority 1]" in captured.out
+    assert (
+        "Learn Rust (0.00h / 20.00h, 20.00h left) [priority 1] — no pace yet"
+        in captured.out
+    )
     assert "Inactive:" in captured.out
-    assert "Learn Go (10.0h)" in captured.out
+    assert "Learn Go (0.00h / 10.00h, 10.00h left)" in captured.out
+
+
+def test_handle_list_shows_archived_section(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.delete_goal("Learn Rust", "lost interest", db_path=db_path)
+
+    goals.handle(["list"])
+    captured = capsys.readouterr()
+
+    assert "Archived:" in captured.out
+    assert "Learn Rust — lost interest" in captured.out
+
+
+def test_handle_list_shows_only_archived_without_no_goals_message(
+    monkeypatch, capsys, tmp_path
+):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.delete_goal("Learn Rust", "lost interest", db_path=db_path)
+
+    goals.handle(["list"])
+    captured = capsys.readouterr()
+
+    assert "No goals yet" not in captured.out
 
 
 def test_get_mode_defaults_to_relaxed(tmp_path):
@@ -491,3 +745,321 @@ def test_handle_mode_sets_mode(monkeypatch, capsys, tmp_path):
     goals.handle(["mode", "hardcore"])
     captured = capsys.readouterr()
     assert "Mode set to 'hardcore'" in captured.out
+
+
+# --- goal add: deadline parsing ---
+
+
+def test_parse_add_args_no_deadline():
+    hours_raw, name, deadline = goals._parse_add_args(["20", "Learn", "Rust"])
+    assert hours_raw == "20"
+    assert name == "Learn Rust"
+    assert deadline is None
+
+
+def test_parse_add_args_relative_days_deadline():
+    _hours_raw, name, deadline = goals._parse_add_args(["20", "Learn", "Rust", "30"])
+    assert name == "Learn Rust"
+    expected = (datetime.now(UTC).date() + timedelta(days=30)).isoformat()
+    assert deadline == expected
+
+
+def test_parse_add_args_explicit_date_deadline():
+    _hours_raw, name, deadline = goals._parse_add_args(
+        ["20", "Learn", "Rust", "2026-12-01"]
+    )
+    assert name == "Learn Rust"
+    assert deadline == "2026-12-01"
+
+
+def test_parse_add_args_single_name_token_not_treated_as_deadline():
+    # Only one token after hours -- must be the name, not a deadline, even
+    # though "30" would otherwise parse as one.
+    _hours_raw, name, deadline = goals._parse_add_args(["20", "30"])
+    assert name == "30"
+    assert deadline is None
+
+
+def test_parse_add_args_non_date_trailing_token_stays_part_of_name():
+    _hours_raw, name, deadline = goals._parse_add_args(["20", "Learn", "Rust", "Extra"])
+    assert name == "Learn Rust Extra"
+    assert deadline is None
+
+
+def test_add_goal_stores_deadline(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 20, "2026-12-01", db_path=db_path)
+    assert goal.deadline == "2026-12-01"
+    assert goals.list_goals(db_path=db_path)[0].deadline == "2026-12-01"
+
+
+def test_handle_add_with_deadline_shows_due_date(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["add", "20", "Learn", "Rust", "2026-12-01"])
+    captured = capsys.readouterr()
+    assert "due 2026-12-01" in captured.out
+
+
+# --- lock-in trigger ---
+
+
+def _days_from_now(n):
+    return (datetime.now(UTC).date() + timedelta(days=n)).isoformat()
+
+
+def _set_lock_in_checked_on(db_path, iso_date):
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE app_settings SET lock_in_checked_on = ?", (iso_date,))
+    conn.commit()
+    conn.close()
+
+
+def test_refresh_lock_in_locks_when_falling_behind(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+
+    status = goals.refresh_lock_in(db_path=db_path)
+
+    assert status.locked is True
+    assert status.goal_name == "Learn Rust"
+    assert goals.get_mode(db_path=db_path) == "lock_in"
+
+
+def test_refresh_lock_in_deactivates_other_goals_on_lock(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.set_mode("hardcore", db_path=db_path)
+    goals.add_goal("Side Project", 5, db_path=db_path)
+    goals.activate_goal("Side Project", db_path=db_path)
+
+    goals.refresh_lock_in(db_path=db_path)
+
+    by_name = {g.name: g.active for g in goals.list_goals(db_path=db_path)}
+    assert by_name["Learn Rust"] is True
+    assert by_name["Side Project"] is False
+
+
+def test_refresh_lock_in_not_locked_with_sufficient_pace(tmp_path):
+    db_path = tmp_path / "test.db"
+    # 20h target, 60 days to the deadline: after 2h spent, required pace is
+    # 18h / 60d = 0.3h/day. A 2h session in the last 4 days averages to
+    # 0.5h/day over that window -- comfortably ahead of the requirement.
+    goals.add_goal("Learn Rust", 20, _days_from_now(60), db_path=db_path)
+    goal = goals.activate_goal("Learn Rust", db_path=db_path)
+    _insert_session(
+        db_path,
+        goal.id,
+        "completed",
+        2 * 3600,
+        started_at=datetime.now(UTC).isoformat(),
+    )
+
+    status = goals.refresh_lock_in(db_path=db_path)
+
+    assert status.locked is False
+    assert goals.get_mode(db_path=db_path) == "relaxed"
+
+
+def test_refresh_lock_in_ignores_goal_without_deadline(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+
+    status = goals.refresh_lock_in(db_path=db_path)
+
+    assert status.locked is False
+
+
+def test_refresh_lock_in_ignores_non_priority_goals(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.set_mode("hardcore", db_path=db_path)
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)  # priority 1, no deadline
+    goals.add_goal("Side Project", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Side Project", db_path=db_path)  # priority 2, tight deadline
+
+    status = goals.refresh_lock_in(db_path=db_path)
+
+    assert status.locked is False
+
+
+def test_refresh_lock_in_auto_unlocks_when_goal_no_longer_qualifies(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    assert goals.refresh_lock_in(db_path=db_path).locked is True
+
+    # Simulate the next day and remove the goal's deadline -- nothing left
+    # for the trigger to enforce.
+    _set_lock_in_checked_on(db_path, _days_from_now(-1))
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE goals SET deadline = NULL WHERE name = 'Learn Rust'")
+    conn.commit()
+    conn.close()
+
+    status = goals.refresh_lock_in(db_path=db_path)
+    assert status.locked is False
+
+
+def test_refresh_lock_in_caches_within_same_day(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goal = goals.activate_goal("Learn Rust", db_path=db_path)
+    assert goals.refresh_lock_in(db_path=db_path).locked is True
+
+    # Even though pace now easily clears the requirement, the same-day
+    # cache should keep reporting locked until the next evaluation day.
+    _insert_session(
+        db_path,
+        goal.id,
+        "completed",
+        20 * 3600,
+        started_at=datetime.now(UTC).isoformat(),
+    )
+    status = goals.refresh_lock_in(db_path=db_path)
+    assert status.locked is True
+
+    _set_lock_in_checked_on(db_path, _days_from_now(-1))
+    status = goals.refresh_lock_in(db_path=db_path)
+    assert status.locked is False
+
+
+def test_refresh_lock_in_does_not_consume_days_slot_when_nothing_to_evaluate(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    # Not active yet -- an early check (as happens mid-activation via
+    # _refuse_if_locked) must not burn today's real evaluation slot.
+    assert goals.refresh_lock_in(db_path=db_path).locked is False
+
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    status = goals.refresh_lock_in(db_path=db_path)
+    assert status.locked is True
+
+
+def test_unlock_requires_reason(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+
+    with pytest.raises(goals.GoalError):
+        goals.unlock("   ", db_path=db_path)
+
+
+def test_unlock_requires_currently_locked(tmp_path):
+    db_path = tmp_path / "test.db"
+    with pytest.raises(goals.GoalError):
+        goals.unlock("taking a break", db_path=db_path)
+
+
+def test_unlock_preserves_for_rest_of_day(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    assert goals.refresh_lock_in(db_path=db_path).locked is True
+
+    goals.unlock("taking a break", db_path=db_path)
+
+    # Same-day re-check must not immediately re-lock, even though pace is
+    # still objectively behind.
+    status = goals.refresh_lock_in(db_path=db_path)
+    assert status.locked is False
+
+
+def test_handle_mode_blocked_when_locked(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+    capsys.readouterr()
+
+    goals.handle(["mode", "relaxed"])
+    captured = capsys.readouterr()
+    assert "Locked in on 'Learn Rust'" in captured.out
+    assert goals.get_mode(db_path=db_path) == "lock_in"
+
+
+def test_handle_mode_read_only_allowed_when_locked(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+    capsys.readouterr()
+
+    goals.handle(["mode"])
+    captured = capsys.readouterr()
+    assert "Current mode: lock_in" in captured.out
+
+
+def test_handle_priority_blocked_when_locked(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.add_goal("Side Project", 5, db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+    capsys.readouterr()
+
+    goals.handle(["priority", "Side", "Project"])
+    captured = capsys.readouterr()
+    assert "Locked in on 'Learn Rust'" in captured.out
+    assert goals.list_goals(db_path=db_path)[1].active is False
+
+
+def test_handle_deactivate_blocked_when_locked(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+    capsys.readouterr()
+
+    goals.handle(["deactivate", "Learn", "Rust"])
+    captured = capsys.readouterr()
+    assert "Locked in on 'Learn Rust'" in captured.out
+    assert goals.list_goals(db_path=db_path)[0].active is True
+
+
+def test_handle_list_shows_lock_banner(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+
+    goals.handle(["list"])
+    captured = capsys.readouterr()
+    assert "Locked in on 'Learn Rust'" in captured.out
+
+
+def test_handle_unlock_missing_args(capsys):
+    goals.handle(["unlock"])
+    captured = capsys.readouterr()
+    assert "[error] Usage: goal unlock <reason>" in captured.out
+
+
+def test_handle_unlock_not_locked(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(goals, "goals_db_path", lambda: tmp_path / "test.db")
+    goals.handle(["unlock", "reason"])
+    captured = capsys.readouterr()
+    assert "Not currently locked" in captured.out
+
+
+def test_handle_unlock_success(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.refresh_lock_in(db_path=db_path)
+    capsys.readouterr()
+
+    goals.handle(["unlock", "taking", "a", "break"])
+    captured = capsys.readouterr()
+    assert "Unlocked" in captured.out
+
+    goals.handle(["mode", "relaxed"])
+    captured = capsys.readouterr()
+    assert "Mode set to 'relaxed'" in captured.out
