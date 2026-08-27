@@ -1,26 +1,25 @@
 from purrsist import cli, exit_message, welcome_message
 
 
-def test_initialization(capsys):
+def test_initialization(capsys, monkeypatch):
+    monkeypatch.setattr(cli.tracking, "current_streak_days", lambda: 0)
     welcome_message()
     captured = capsys.readouterr()
-    assert (
-        captured.out
-        == """==================================================
-  Purrsist - Keep at it, don't let Purr down! 😺
-==================================================\n"""
-    )
+    assert "Purrsist - Keep at it, don't let Purr down! 😺" in captured.out
+    assert "streak" not in captured.out
+
+
+def test_welcome_message_shows_streak_badge(capsys, monkeypatch):
+    monkeypatch.setattr(cli.tracking, "current_streak_days", lambda: 3)
+    welcome_message()
+    captured = capsys.readouterr()
+    assert "3-day streak" in captured.out
 
 
 def test_exit_message(capsys):
     exit_message()
     captured = capsys.readouterr()
-    assert (
-        captured.out
-        == """==================================================
-  Purrsist signing off🐾🐾 See you next time! 😺
-==================================================\n"""
-    )
+    assert "Purrsist signing off🐾🐾 See you next time! 😺" in captured.out
 
 
 def test_print_cli_default_padding(capsys):

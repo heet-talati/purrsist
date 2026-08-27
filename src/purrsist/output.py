@@ -1,6 +1,7 @@
 import sys
 
 from rich.console import Console
+from rich.panel import Panel
 from rich.text import Text
 
 SUCCESS_STYLE = "bold #4FD1AE"
@@ -24,6 +25,16 @@ _SUCCESS_PREFIX = ICON_SUCCESS
 _WARNING_PREFIX = ICON_LOCKED
 
 
+def _console() -> Console:
+    # Rich probes the real Windows console handle for color support, which
+    # ignores a Python-level sys.stdout swap (e.g. pytest's capsys) — force
+    # terminal detection off of sys.stdout.isatty() instead so redirected
+    # or captured output stays plain.
+    return Console(
+        highlight=False, force_terminal=sys.stdout.isatty(), legacy_windows=False
+    )
+
+
 def print_cli(text, padding=1):
     indent = "  " * padding
     line = Text(indent + text)
@@ -33,11 +44,8 @@ def print_cli(text, padding=1):
         line.stylize(SUCCESS_STYLE, len(indent), len(indent) + len(_SUCCESS_PREFIX))
     elif text.startswith(_WARNING_PREFIX):
         line.stylize(WARNING_STYLE, len(indent), len(indent) + len(_WARNING_PREFIX))
-    # Rich probes the real Windows console handle for color support, which
-    # ignores a Python-level sys.stdout swap (e.g. pytest's capsys) — force
-    # terminal detection off of sys.stdout.isatty() instead so redirected
-    # or captured output stays plain.
-    console = Console(
-        highlight=False, force_terminal=sys.stdout.isatty(), legacy_windows=False
-    )
-    console.print(line, soft_wrap=True)
+    _console().print(line, soft_wrap=True)
+
+
+def print_panel(content: str, *, subtitle: str | None = None) -> None:
+    _console().print(Panel(content, border_style=BRAND_STYLE, subtitle=subtitle))

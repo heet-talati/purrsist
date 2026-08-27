@@ -2,7 +2,7 @@ from importlib.metadata import version
 
 from commands import goals, tracking
 
-from .output import print_cli
+from .output import ICON_STREAK, print_cli, print_panel
 
 # Global Variables
 APP_VERSION = version("purrsist")
@@ -10,15 +10,13 @@ APP_VERSION = version("purrsist")
 
 # Command Line Interface (CLI) Functions
 def welcome_message():
-    print(f"""{"=" * 50}
-  Purrsist - Keep at it, don't let Purr down! 😺
-{"=" * 50}""")
+    streak = tracking.current_streak_days()
+    subtitle = f"{ICON_STREAK} {streak}-day streak" if streak else None
+    print_panel("Purrsist - Keep at it, don't let Purr down! 😺", subtitle=subtitle)
 
 
 def exit_message():
-    print(f"""{"=" * 50}
-  Purrsist signing off🐾🐾 See you next time! 😺
-{"=" * 50}""")
+    print_panel("Purrsist signing off🐾🐾 See you next time! 😺")
 
 
 def query_input():

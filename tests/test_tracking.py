@@ -263,6 +263,67 @@ def test_run_countdown_pads_shorter_line_to_clear_previous_longer_one():
     assert len(resumed_line) - 1 == len(paused_line) - 1  # both minus leading \r
 
 
+def _seed_session(conn, goal_id, days_ago, status="completed", focused_seconds=60):
+    started = (datetime.now(UTC) - timedelta(days=days_ago)).isoformat()
+    conn.execute(
+        "INSERT INTO sessions (goal_id, planned_minutes, started_at, status, "
+        "focused_seconds) VALUES (?, 25, ?, ?, ?)",
+        (goal_id, started, status, focused_seconds),
+    )
+
+
+def test_current_streak_days_zero_when_no_sessions(tmp_path):
+    db_path = tmp_path / "test.db"
+    assert tracking_data.current_streak_days(db_path) == 0
+
+
+def test_current_streak_days_counts_consecutive_days_including_today(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    for days_ago in (0, 1, 2):
+        _seed_session(conn, goal.id, days_ago)
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 3
+
+
+def test_current_streak_days_continues_through_missed_today(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    for days_ago in (1, 2):
+        _seed_session(conn, goal.id, days_ago)
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 2
+
+
+def test_current_streak_days_stops_at_gap(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    for days_ago in (0, 2):  # gap at day 1
+        _seed_session(conn, goal.id, days_ago)
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 1
+
+
+def test_current_streak_days_ignores_zero_focus_sessions(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    _seed_session(conn, goal.id, 0, status="cancelled", focused_seconds=0)
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 0
+
+
 def test_pause_session_marks_paused(tmp_path):
     db_path = tmp_path / "test.db"
     _add_active_goal(db_path)

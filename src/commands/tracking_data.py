@@ -1,6 +1,6 @@
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from commands import db
@@ -223,3 +223,32 @@ def cancel_session(
     session.paused_seconds = paused_seconds
     session.focused_seconds = focused_seconds
     return session
+
+
+def current_streak_days(db_path: Path | None = None) -> int:
+    """Consecutive calendar days (UTC) with at least one focused session.
+
+    A missed *today* doesn't break the streak until the day actually ends --
+    it's counted from yesterday backward if today has no session yet.
+    """
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT started_at FROM sessions "
+            "WHERE status IN ('completed', 'cancelled') AND focused_seconds > 0"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    active_dates = {datetime.fromisoformat(row[0]).date() for row in rows}
+    if not active_dates:
+        return 0
+
+    today = datetime.now(UTC).date()
+    cursor_date = today if today in active_dates else today - timedelta(days=1)
+
+    streak = 0
+    while cursor_date in active_dates:
+        streak += 1
+        cursor_date -= timedelta(days=1)
+    return streak
