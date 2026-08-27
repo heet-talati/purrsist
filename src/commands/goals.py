@@ -158,6 +158,8 @@ def delete_goal(name: str, db_path: Path | None = None) -> Goal:
             raise GoalError(f"No goal named '{name}' found.")
 
         conn.execute("DELETE FROM goals WHERE id = ?", (row[0],))
+        if row[3]:  # was active: close the priority gap it leaves behind
+            _renumber_active(conn)
         conn.commit()
     finally:
         conn.close()

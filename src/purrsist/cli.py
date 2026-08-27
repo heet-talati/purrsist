@@ -104,7 +104,7 @@ def repl():
     while True:
         try:
             command, options = query_input()
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             print()
             break
 
