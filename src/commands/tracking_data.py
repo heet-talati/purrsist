@@ -1,6 +1,6 @@
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from commands import db
@@ -278,22 +278,41 @@ def upsert_log(session_id: int, content: str, db_path: Path | None = None) -> No
         conn.close()
 
 
+_STREAK_MIN_FOCUSED_SECONDS = 900  # 15 minutes
+
+
 def current_streak_days(db_path: Path | None = None) -> int:
-    """Consecutive calendar days (UTC) with at least one focused session.
+    """Consecutive calendar days (UTC) that qualify for the streak: the
+    "cat stays hungry" mechanic -- a day only counts if it has at least one
+    logged session AND >= 15 focused minutes total across that day's
+    sessions (a daily total, not a single session's minimum).
 
     A missed *today* doesn't break the streak until the day actually ends --
-    it's counted from yesterday backward if today has no session yet.
+    it's counted from yesterday backward if today has no qualifying day yet.
     """
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            "SELECT started_at FROM sessions "
-            "WHERE status IN ('completed', 'cancelled') AND focused_seconds > 0"
+            "SELECT sessions.started_at, sessions.focused_seconds, logs.id "
+            "FROM sessions LEFT JOIN logs ON logs.session_id = sessions.id "
+            "WHERE sessions.status IN ('completed', 'cancelled')"
         ).fetchall()
     finally:
         conn.close()
 
-    active_dates = {datetime.fromisoformat(row[0]).date() for row in rows}
+    focused_by_date: dict[date, int] = {}
+    logged_dates: set[date] = set()
+    for started_at, focused_seconds, log_id in rows:
+        day = datetime.fromisoformat(started_at).date()
+        focused_by_date[day] = focused_by_date.get(day, 0) + (focused_seconds or 0)
+        if log_id is not None:
+            logged_dates.add(day)
+
+    active_dates = {
+        day
+        for day, total_focused in focused_by_date.items()
+        if day in logged_dates and total_focused >= _STREAK_MIN_FOCUSED_SECONDS
+    }
     if not active_dates:
         return 0
 

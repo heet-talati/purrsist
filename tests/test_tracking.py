@@ -259,11 +259,28 @@ def test_run_countdown_render_fn_receives_paused_state():
 
 def _seed_session(conn, goal_id, days_ago, status="completed", focused_seconds=60):
     started = (datetime.now(UTC) - timedelta(days=days_ago)).isoformat()
-    conn.execute(
+    cursor = conn.execute(
         "INSERT INTO sessions (goal_id, planned_minutes, started_at, status, "
         "focused_seconds) VALUES (?, 25, ?, ?, ?)",
         (goal_id, started, status, focused_seconds),
     )
+    return cursor.lastrowid
+
+
+def _seed_log(conn, session_id, content="did stuff"):
+    now = datetime.now(UTC).isoformat()
+    conn.execute(
+        "INSERT INTO logs (session_id, content, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?)",
+        (session_id, content, now, now),
+    )
+
+
+def _seed_qualifying_day(conn, goal_id, days_ago, focused_seconds=900):
+    """A day that should count toward the streak under the new rules:
+    logged, and >= 15 focused minutes."""
+    session_id = _seed_session(conn, goal_id, days_ago, focused_seconds=focused_seconds)
+    _seed_log(conn, session_id)
 
 
 def test_current_streak_days_zero_when_no_sessions(tmp_path):
@@ -276,7 +293,7 @@ def test_current_streak_days_counts_consecutive_days_including_today(tmp_path):
     goal = _add_active_goal(db_path)
     conn = sqlite3.connect(db_path)
     for days_ago in (0, 1, 2):
-        _seed_session(conn, goal.id, days_ago)
+        _seed_qualifying_day(conn, goal.id, days_ago)
     conn.commit()
     conn.close()
 
@@ -288,7 +305,7 @@ def test_current_streak_days_continues_through_missed_today(tmp_path):
     goal = _add_active_goal(db_path)
     conn = sqlite3.connect(db_path)
     for days_ago in (1, 2):
-        _seed_session(conn, goal.id, days_ago)
+        _seed_qualifying_day(conn, goal.id, days_ago)
     conn.commit()
     conn.close()
 
@@ -300,7 +317,7 @@ def test_current_streak_days_stops_at_gap(tmp_path):
     goal = _add_active_goal(db_path)
     conn = sqlite3.connect(db_path)
     for days_ago in (0, 2):  # gap at day 1
-        _seed_session(conn, goal.id, days_ago)
+        _seed_qualifying_day(conn, goal.id, days_ago)
     conn.commit()
     conn.close()
 
@@ -311,7 +328,44 @@ def test_current_streak_days_ignores_zero_focus_sessions(tmp_path):
     db_path = tmp_path / "test.db"
     goal = _add_active_goal(db_path)
     conn = sqlite3.connect(db_path)
-    _seed_session(conn, goal.id, 0, status="cancelled", focused_seconds=0)
+    session_id = _seed_session(conn, goal.id, 0, status="cancelled", focused_seconds=0)
+    _seed_log(conn, session_id)
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 0
+
+
+def test_current_streak_days_sums_focused_seconds_across_sessions_same_day(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    _seed_session(conn, goal.id, 0, focused_seconds=500)  # unlogged, alone < 15 min
+    logged_id = _seed_session(conn, goal.id, 0, focused_seconds=500)
+    _seed_log(conn, logged_id)  # combined 1000s >= 900s, and the day has a log
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 1
+
+
+def test_current_streak_days_requires_a_log_entry(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    _seed_session(conn, goal.id, 0, focused_seconds=900)  # no log
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 0
+
+
+def test_current_streak_days_requires_15_minutes_total(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    session_id = _seed_session(conn, goal.id, 0, focused_seconds=300)  # 5 min
+    _seed_log(conn, session_id)
     conn.commit()
     conn.close()
 
