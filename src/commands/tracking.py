@@ -268,12 +268,6 @@ def _parse_start_args(options: list[str]) -> tuple[str, float]:
 
 
 def _handle_start(options: list[str]) -> None:
-    if not options:
-        print_cli(
-            f"[error] Usage: track start <goal_name> [{'|'.join(PRESETS)}|minutes]"
-        )
-        return
-
     name, minutes = _parse_start_args(options)
 
     goals.refresh_lock_in()
@@ -330,42 +324,24 @@ def _print_completion_banner(goal_name: str, actual_str: str, planned_str: str) 
 
 def _handle_help(options: list[str]) -> None:
     print_help_table(
-        "Available track subcommands:",
+        "track usage:",
         {
-            name: subcommand.description
-            for name, subcommand in TRACK_SUBCOMMANDS.items()
+            f"track <goal_name> [{'|'.join(PRESETS)}|minutes]": (
+                f"Start a timer for a goal (default: pomodoro, {DEFAULT_MINUTES:g} min)"
+            ),
+            "track help": "Show this help",
         },
     )
-
-
-class _Subcommand(NamedTuple):
-    description: str
-    handler: Callable[[list[str]], None]
-
-
-TRACK_SUBCOMMANDS = {
-    "start": _Subcommand(
-        "Start a timer for a goal: track start <goal_name> "
-        f"[{'|'.join(PRESETS)}|minutes] (default: pomodoro, {DEFAULT_MINUTES:g} min)",
-        _handle_start,
-    ),
-    "help": _Subcommand("List available track subcommands", _handle_help),
-}
 
 
 def handle(options: list[str] | None = None) -> None:
     options = options or []
     if not options:
-        print_cli(f"[error] Usage: track <{'|'.join(TRACK_SUBCOMMANDS)}> ...")
+        print_cli(f"[error] Usage: track <goal_name> [{'|'.join(PRESETS)}|minutes]")
         return
 
-    subcommand_name, *rest = options
-    subcommand = TRACK_SUBCOMMANDS.get(subcommand_name)
-    if subcommand is None:
-        print_cli(
-            f"[error] Unknown track subcommand '{subcommand_name}'. "
-            f"Available: {', '.join(TRACK_SUBCOMMANDS)}"
-        )
+    if options[0] == "help":
+        _handle_help(options[1:])
         return
 
-    subcommand.handler(rest)
+    _handle_start(options)

@@ -14,6 +14,10 @@ class GoalError(ValueError):
 MODE_LIMITS = {"lock_in": 1, "hardcore": 2, "relaxed": 3}
 DEFAULT_MODE = db.DEFAULT_MODE
 
+# Goal names double as `track <goal_name>` arguments, so a name matching a
+# track subcommand (currently just "help") would be ambiguous at dispatch time.
+_RESERVED_NAMES = {"help"}
+
 
 @dataclass
 class Goal:
@@ -246,6 +250,8 @@ def add_goal(
         raise GoalError("Goal name cannot be empty.")
     if name.isdigit():
         raise GoalError("Goal name cannot be a number -- numbers are used as goal ids.")
+    if name.lower() in _RESERVED_NAMES:
+        raise GoalError(f"'{name}' is a reserved name and can't be used for a goal.")
     if hours <= 0:
         raise GoalError("Hours must be a positive number.")
 
@@ -459,6 +465,10 @@ def update_goal(
             if new_name.isdigit():
                 raise GoalError(
                     "Goal name cannot be a number -- numbers are used as goal ids."
+                )
+            if new_name.lower() in _RESERVED_NAMES:
+                raise GoalError(
+                    f"'{new_name}' is a reserved name and can't be used for a goal."
                 )
             try:
                 conn.execute(

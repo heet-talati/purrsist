@@ -406,35 +406,23 @@ def test_parse_start_args_single_token_is_name():
     assert minutes == tracking.DEFAULT_MINUTES
 
 
-def test_handle_missing_subcommand(capsys):
+def test_handle_missing_goal_name(capsys):
     tracking.handle([])
     captured = capsys.readouterr()
     assert "[error] Usage: track" in captured.out
 
 
-def test_handle_unknown_subcommand(capsys):
-    tracking.handle(["frobnicate"])
-    captured = capsys.readouterr()
-    assert "Unknown track subcommand" in captured.out
-
-
-def test_handle_help_lists_subcommands(capsys):
+def test_handle_help_shows_usage(capsys):
     tracking.handle(["help"])
     captured = capsys.readouterr()
-    for name in tracking.TRACK_SUBCOMMANDS:
-        assert name in captured.out
-
-
-def test_handle_start_missing_args(capsys):
-    tracking.handle(["start"])
-    captured = capsys.readouterr()
-    assert "[error] Usage: track start" in captured.out
+    assert "track <goal_name>" in captured.out
+    assert "track help" in captured.out
 
 
 def test_handle_start_rejects_missing_goal(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: tmp_path / "test.db")
     monkeypatch.setattr(goals_data, "goals_db_path", lambda: tmp_path / "test.db")
-    tracking.handle(["start", "Nonexistent", "25"])
+    tracking.handle(["Nonexistent", "25"])
     captured = capsys.readouterr()
     assert "No goal named 'Nonexistent' found" in captured.out
 
@@ -455,7 +443,7 @@ def test_handle_start_refuses_non_priority_goal_once_locked(
 
     # Starting a session on the neglected priority goal's sibling is what
     # should trigger the lock-in check and deactivate the sibling.
-    tracking.handle(["start", "Side", "Project", "25"])
+    tracking.handle(["Side", "Project", "25"])
     captured = capsys.readouterr()
 
     assert "is not active" in captured.out
@@ -470,7 +458,7 @@ def test_handle_start_runs_countdown_to_completion(monkeypatch, capsys, tmp_path
 
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
-    tracking.handle(["start", "Learn", "Rust", "0.02"])
+    tracking.handle(["Learn", "Rust", "0.02"])
 
     captured = capsys.readouterr()
     assert "Tracking 'Learn Rust'" in captured.out
@@ -492,7 +480,7 @@ def test_handle_start_accepts_preset_name(monkeypatch, capsys, tmp_path):
 
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
-    tracking.handle(["start", "Learn", "Rust", "short"])
+    tracking.handle(["Learn", "Rust", "short"])
 
     captured = capsys.readouterr()
     assert "Tracking 'Learn Rust' for 15 min" in captured.out
@@ -516,7 +504,7 @@ def test_handle_start_ctrl_c_has_no_bell_or_completion_banner(
 
     monkeypatch.setattr(tracking.time, "sleep", _raise)
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
-    tracking.handle(["start", "Learn", "Rust", "25"])
+    tracking.handle(["Learn", "Rust", "25"])
 
     captured = capsys.readouterr()
     assert "\a" not in captured.out
@@ -534,7 +522,7 @@ def test_handle_start_ctrl_c_cancels_session(monkeypatch, capsys, tmp_path):
 
     monkeypatch.setattr(tracking.time, "sleep", _raise)
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
-    tracking.handle(["start", "Learn", "Rust", "25"])
+    tracking.handle(["Learn", "Rust", "25"])
 
     captured = capsys.readouterr()
     assert "Stopped 'Learn Rust' early" in captured.out
@@ -557,7 +545,7 @@ def test_handle_start_quit_key_cancels_session_with_summary(
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: next(keys))
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
 
-    tracking.handle(["start", "Learn", "Rust", "0.05"])
+    tracking.handle(["Learn", "Rust", "0.05"])
 
     captured = capsys.readouterr()
     assert "Stopped 'Learn Rust' early" in captured.out
@@ -579,7 +567,7 @@ def test_handle_start_pause_then_resume_completes(monkeypatch, capsys, tmp_path)
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: next(keys))
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
 
-    tracking.handle(["start", "Learn", "Rust", "0.05"])
+    tracking.handle(["Learn", "Rust", "0.05"])
 
     captured = capsys.readouterr()
     assert "Session complete for 'Learn Rust'" in captured.out
