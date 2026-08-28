@@ -7,6 +7,7 @@ from rich.console import Group, NewLine, RenderableType
 from rich.live import Live
 from rich.padding import Padding
 from rich.progress_bar import ProgressBar
+from rich.prompt import Prompt
 from rich.text import Text
 
 from commands import goals
@@ -312,6 +313,8 @@ def _handle_start(options: list[str]) -> None:
         actual_str = _format_remaining(completed.focused_seconds or 0)
         _print_completion_banner(completed.goal_name, actual_str, planned_str)
 
+    _prompt_for_log(session_id)
+
 
 def _print_completion_banner(goal_name: str, actual_str: str, planned_str: str) -> None:
     """Bell + bordered banner on natural completion, distinct from the
@@ -322,6 +325,16 @@ def _print_completion_banner(goal_name: str, actual_str: str, planned_str: str) 
     print_cli(f"{ICON_BELL} TIME'S UP! Session complete for '{goal_name}'", 0)
     print_cli(f"{actual_str} focused (planned {planned_str})", 0)
     print_cli(border, 0)
+
+
+def _prompt_for_log(session_id: int) -> None:
+    """Low-friction primary path for #48's upsert_log -- empty input (just
+    Enter) skips silently, no row written. `track log` is the manual
+    fallback for a skipped prompt."""
+    entry = Prompt.ask("  Log what you did (optional)", console=make_console()).strip()
+    if not entry:
+        return
+    upsert_log(session_id, entry)
 
 
 def _handle_log(options: list[str]) -> None:

@@ -511,6 +511,7 @@ def test_handle_start_runs_countdown_to_completion(monkeypatch, capsys, tmp_path
 
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
     tracking.handle(["Learn", "Rust", "0.02"])
 
     captured = capsys.readouterr()
@@ -525,6 +526,30 @@ def test_handle_start_runs_countdown_to_completion(monkeypatch, capsys, tmp_path
     assert status == "completed"
 
 
+def test_handle_start_prompts_for_log_on_natural_completion(
+    monkeypatch, capsys, tmp_path
+):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+
+    monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+    monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda: "read chapter 3")
+
+    tracking.handle(["Learn", "Rust", "0.02"])
+
+    conn = sqlite3.connect(db_path)
+    session_id, content = conn.execute(
+        "SELECT sessions.id, logs.content FROM sessions "
+        "JOIN logs ON logs.session_id = sessions.id"
+    ).fetchone()
+    conn.close()
+    assert content == "read chapter 3"
+    assert session_id is not None
+
+
 def test_handle_start_accepts_preset_name(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
     monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
@@ -533,6 +558,7 @@ def test_handle_start_accepts_preset_name(monkeypatch, capsys, tmp_path):
 
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
     tracking.handle(["Learn", "Rust", "short"])
 
     captured = capsys.readouterr()
@@ -557,6 +583,7 @@ def test_handle_start_ctrl_c_has_no_bell_or_completion_banner(
 
     monkeypatch.setattr(tracking.time, "sleep", _raise)
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
     tracking.handle(["Learn", "Rust", "25"])
 
     captured = capsys.readouterr()
@@ -575,6 +602,7 @@ def test_handle_start_ctrl_c_cancels_session(monkeypatch, capsys, tmp_path):
 
     monkeypatch.setattr(tracking.time, "sleep", _raise)
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
     tracking.handle(["Learn", "Rust", "25"])
 
     captured = capsys.readouterr()
@@ -597,6 +625,7 @@ def test_handle_start_quit_key_cancels_session_with_summary(
     keys = iter(["q"])
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: next(keys))
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
 
     tracking.handle(["Learn", "Rust", "0.05"])
 
@@ -610,6 +639,45 @@ def test_handle_start_quit_key_cancels_session_with_summary(
     assert status == "cancelled"
 
 
+def test_handle_start_prompts_for_log_on_early_stop(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+
+    keys = iter(["q"])
+    monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: next(keys))
+    monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+    monkeypatch.setattr("builtins.input", lambda: "stopped partway")
+
+    tracking.handle(["Learn", "Rust", "0.05"])
+
+    conn = sqlite3.connect(db_path)
+    content = conn.execute("SELECT content FROM logs").fetchone()[0]
+    conn.close()
+    assert content == "stopped partway"
+
+
+def test_handle_start_skips_log_when_prompt_answer_is_empty(
+    monkeypatch, capsys, tmp_path
+):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+
+    monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+    monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
+
+    tracking.handle(["Learn", "Rust", "0.02"])
+
+    conn = sqlite3.connect(db_path)
+    count = conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
+    conn.close()
+    assert count == 0
+
+
 def test_handle_start_pause_then_resume_completes(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
     monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
@@ -619,6 +687,7 @@ def test_handle_start_pause_then_resume_completes(monkeypatch, capsys, tmp_path)
     keys = iter(["p", "p", None, None, None])
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: next(keys))
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
 
     tracking.handle(["Learn", "Rust", "0.05"])
 
