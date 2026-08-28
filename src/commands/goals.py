@@ -84,8 +84,11 @@ def _parse_add_args(options: list[str]) -> tuple[str, str, str | None]:
 
 
 def _handle_add(options: list[str]) -> None:
+    usage = (
+        "[error] Usage: goal add <hours> <name> <days|date> -- a deadline is required."
+    )
     if len(options) < 2:
-        print_cli("[error] Usage: goal add <hours> <name> [days|date]")
+        print_cli(usage)
         return
 
     hours_raw, name, deadline = _parse_add_args(options)
@@ -94,6 +97,10 @@ def _handle_add(options: list[str]) -> None:
         hours = float(hours_raw)
     except ValueError:
         print_cli(f"[error] '{hours_raw}' is not a valid number of hours.")
+        return
+
+    if deadline is None:
+        print_cli(usage)
         return
 
     try:
@@ -164,7 +171,7 @@ def _handle_list(options: list[str]) -> None:
     all_goals = list_goals()
     archived_goals = list_archived_goals()
     if not all_goals and not archived_goals:
-        print_muted("No goals yet. Add one with 'goal add <hours> <name>'.")
+        print_muted("No goals yet. Add one with 'goal add <hours> <name> <days|date>'.")
         return
 
     if status.locked:
@@ -175,12 +182,21 @@ def _handle_list(options: list[str]) -> None:
 
     active = [g for g in all_goals if g.active]
     inactive = [g for g in all_goals if not g.active]
+    widths = _shared_column_widths(all_goals) if active and inactive else None
 
     if active:
-        render(_build_goal_table("Active:", active, include_priority=True))
+        render(
+            _build_goal_table("Active:", active, include_priority=True, widths=widths)
+        )
 
     if inactive:
-        render(_build_goal_table("Inactive:", inactive, include_priority=False))
+        if active:
+            print_cli("", 0)
+        render(
+            _build_goal_table(
+                "Inactive:", inactive, include_priority=False, widths=widths
+            )
+        )
 
     if archived_goals:
         table = Table(title="Archived:", title_style=PRIMARY_STYLE, box=None)
@@ -192,14 +208,44 @@ def _handle_list(options: list[str]) -> None:
         render(table)
 
 
+class _ColumnWidths(NamedTuple):
+    id: int
+    name: int
+    hours: int
+
+
+def _format_hours_text(goal: Goal) -> str:
+    return (
+        f"{goal.spent_hours:.2f}h / {goal.hours:.2f}h "
+        f"({goal.remaining_hours:.2f}h left)"
+    )
+
+
+def _shared_column_widths(goals_list: list[Goal]) -> _ColumnWidths:
+    """ID/Name/Hours widths shared across the Active and Inactive tables so
+    their columns line up vertically, even though each table only shows a
+    subset of goals and would otherwise auto-size independently."""
+    return _ColumnWidths(
+        id=max(len("ID"), *(len(str(g.id)) for g in goals_list)),
+        name=max(len("Name"), *(len(g.name) for g in goals_list)),
+        hours=max(len("Hours"), *(len(_format_hours_text(g)) for g in goals_list)),
+    )
+
+
 def _build_goal_table(
-    title: str, goals_list: list[Goal], *, include_priority: bool
+    title: str,
+    goals_list: list[Goal],
+    *,
+    include_priority: bool,
+    widths: _ColumnWidths | None = None,
 ) -> Table:
     table = Table(title=title, title_style=PRIMARY_STYLE, box=None)
-    table.add_column("ID", style=MUTED_STYLE, justify="right")
-    table.add_column("Name", style=PRIMARY_STYLE)
+    table.add_column(
+        "ID", style=MUTED_STYLE, justify="right", width=widths.id if widths else None
+    )
+    table.add_column("Name", style=PRIMARY_STYLE, width=widths.name if widths else None)
     table.add_column("Progress")
-    table.add_column("Hours", style=MUTED_STYLE)
+    table.add_column("Hours", style=MUTED_STYLE, width=widths.hours if widths else None)
     if include_priority:
         table.add_column("Pri", style=MUTED_STYLE, justify="center")
     table.add_column("Pace", style=MUTED_STYLE)
@@ -207,11 +253,12 @@ def _build_goal_table(
     for goal in goals_list:
         completed = min(goal.spent_hours, goal.hours) if goal.hours > 0 else 0.0
         bar = ProgressBar(total=goal.hours or 1.0, completed=completed, width=18)
-        hours_text = (
-            f"{goal.spent_hours:.2f}h / {goal.hours:.2f}h "
-            f"({goal.remaining_hours:.2f}h left)"
-        )
-        row: list[RenderableType] = [str(goal.id), goal.name, bar, hours_text]
+        row: list[RenderableType] = [
+            str(goal.id),
+            goal.name,
+            bar,
+            _format_hours_text(goal),
+        ]
         if include_priority:
             row.append(str(goal.priority) if goal.priority else "")
         row.append(_format_pace(goal))
@@ -374,19 +421,46 @@ def _handle_mode(options: list[str]) -> None:
         print_cli(f"- '{goal.name}' reactivated (priority {goal.priority})", 2)
 
 
+_UNLOCK_FIELDS = ("hours", "deadline")
+
+
+def _parse_unlock_args(options: list[str]) -> tuple[str, str | None, str | None]:
+    # Mirrors _parse_update_args' reserved-keyword scan: an optional
+    # trailing "hours <value>" or "deadline <value>" pair lets goal unlock
+    # also fix the pace problem in the same audited command.
+    for i in range(1, len(options)):
+        if options[i].lower() in _UNLOCK_FIELDS:
+            reason = " ".join(options[:i])
+            field = options[i].lower()
+            value = " ".join(options[i + 1 :])
+            return reason, field, value
+    return " ".join(options), None, None
+
+
 def _handle_unlock(options: list[str]) -> None:
+    usage = "[error] Usage: goal unlock <reason> [hours <value>|deadline <value>]"
     if not options:
-        print_cli("[error] Usage: goal unlock <reason>")
+        print_cli(usage)
         return
 
-    reason = " ".join(options)
+    reason, field, value = _parse_unlock_args(options)
+    if field is not None and not value:
+        print_cli(usage)
+        return
+
     try:
-        unlock(reason)
+        goal = unlock(reason, field=field, value=value)
     except GoalError as exc:
         print_cli(f"[error] {exc}")
         return
 
-    print_cli("✓ Unlocked. You can change modes and priorities again today.")
+    message = "✓ Unlocked. You can change modes and priorities again today."
+    if goal is not None:
+        if field == "hours":
+            message += f" '{goal.name}' target updated to {goal.hours:.2f}h"
+        else:
+            message += f" '{goal.name}' deadline set to {goal.deadline}"
+    print_cli(message)
 
 
 def _handle_help(options: list[str]) -> None:
@@ -403,7 +477,7 @@ class _Subcommand(NamedTuple):
 
 GOAL_SUBCOMMANDS = {
     "add": _Subcommand(
-        "Add a new goal: goal add <hours> <name> [days|date]", _handle_add
+        "Add a new goal: goal add <hours> <name> <days|date>", _handle_add
     ),
     "update": _Subcommand(
         "Edit a goal's name, hours, or deadline: "
@@ -432,7 +506,9 @@ GOAL_SUBCOMMANDS = {
         _handle_mode,
     ),
     "unlock": _Subcommand(
-        "Override the lock-in trigger for today: goal unlock <reason>", _handle_unlock
+        "Override the lock-in trigger for today, optionally rescoping the "
+        "goal: goal unlock <reason> [hours <value>|deadline <value>]",
+        _handle_unlock,
     ),
     "help": _Subcommand("List available goal subcommands", _handle_help),
 }
