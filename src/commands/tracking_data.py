@@ -21,6 +21,7 @@ class Session:
     status: str = "running"
     id: int | None = None
     focused_seconds: int | None = None
+    log_content: str | None = None
 
 
 def sessions_db_path() -> Path:
@@ -223,6 +224,36 @@ def cancel_session(
     session.paused_seconds = paused_seconds
     session.focused_seconds = focused_seconds
     return session
+
+
+def list_sessions(
+    goal_id: int | None = None, db_path: Path | None = None
+) -> list[Session]:
+    query = (
+        "SELECT sessions.id, goal_id, goals.name, planned_minutes, "
+        "started_at, ended_at, paused_seconds, status, focused_seconds, "
+        "logs.content FROM sessions "
+        "JOIN goals ON goals.id = sessions.goal_id "
+        "LEFT JOIN logs ON logs.session_id = sessions.id "
+    )
+    params: tuple[int, ...] = ()
+    if goal_id is not None:
+        query += "WHERE sessions.goal_id = ? "
+        params = (goal_id,)
+    query += "ORDER BY sessions.id"
+
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+    sessions = []
+    for row in rows:
+        session = _row_to_session(row)
+        session.log_content = row[9]
+        sessions.append(session)
+    return sessions
 
 
 def upsert_log(session_id: int, content: str, db_path: Path | None = None) -> None:

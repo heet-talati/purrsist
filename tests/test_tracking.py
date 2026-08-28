@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
@@ -470,6 +471,7 @@ def test_handle_help_shows_usage(capsys):
     assert "track <goal_name>" in captured.out
     assert "track help" in captured.out
     assert "track log" in captured.out
+    assert "track list" in captured.out
 
 
 def test_handle_start_rejects_missing_goal(monkeypatch, capsys, tmp_path):
@@ -676,6 +678,105 @@ def test_handle_start_skips_log_when_prompt_answer_is_empty(
     count = conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
     conn.close()
     assert count == 0
+
+
+def test_list_sessions_returns_all_with_joined_log_content(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    logged = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    unlogged = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking_data.upsert_log(logged.id, "read chapter 3", db_path=db_path)
+
+    sessions = tracking_data.list_sessions(db_path=db_path)
+
+    by_id = {session.id: session for session in sessions}
+    assert len(sessions) == 2
+    assert by_id[logged.id].log_content == "read chapter 3"
+    assert by_id[unlogged.id].log_content is None
+
+
+def test_list_sessions_filters_by_goal_id(tmp_path):
+    db_path = tmp_path / "test.db"
+    rust = _add_active_goal(db_path, name="Learn Rust")
+    goals.add_goal("Side Project", 5, db_path=db_path)
+    goals.activate_goal("Side Project", db_path=db_path)
+    tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.start_session("Side Project", 25, db_path=db_path)
+
+    sessions = tracking_data.list_sessions(goal_id=rust.id, db_path=db_path)
+
+    assert len(sessions) == 1
+    assert sessions[0].goal_name == "Learn Rust"
+
+
+def test_handle_list_renders_all_sessions(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+    logged = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking_data.upsert_log(logged.id, "read chapter 3", db_path=db_path)
+
+    tracking.handle(["list"])
+    all_output = capsys.readouterr().out
+    tracking.handle(["list", "all"])
+    all_variant_output = capsys.readouterr().out
+
+    for output in (all_output, all_variant_output):
+        assert "Learn Rust" in output
+        assert "read chapter 3" in output
+        assert "no log yet" in output
+
+
+def test_handle_list_filters_by_goal_name(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path, name="Learn Rust")
+    goals.add_goal("Side Project", 5, db_path=db_path)
+    goals.activate_goal("Side Project", db_path=db_path)
+    tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.start_session("Side Project", 25, db_path=db_path)
+
+    tracking.handle(["list", "Learn", "Rust"])
+
+    output = capsys.readouterr().out
+    assert "Learn Rust" in output
+    assert "Side Project" not in output
+
+
+def test_handle_list_rejects_unknown_goal(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+
+    tracking.handle(["list", "Nonexistent"])
+
+    assert "No goal 'Nonexistent' found" in capsys.readouterr().out
+
+
+def test_handle_list_formats_started_at_readably(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+    tracking.start_session("Learn Rust", 25, db_path=db_path)
+
+    tracking.handle(["list"])
+
+    output = capsys.readouterr().out
+    assert not re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+", output)
+
+
+def test_handle_list_shows_empty_state(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+
+    tracking.handle(["list"])
+
+    assert "No sessions yet" in capsys.readouterr().out
 
 
 def test_handle_start_pause_then_resume_completes(monkeypatch, capsys, tmp_path):

@@ -1315,6 +1315,19 @@ def test_update_goal_rename_rejects_reserved_name_log(tmp_path):
         goals.update_goal("Learn Rust", "name", "log", db_path=db_path)
 
 
+def test_add_goal_rejects_reserved_name_list(tmp_path):
+    db_path = tmp_path / "test.db"
+    with pytest.raises(goals.GoalError):
+        goals.add_goal("list", 20, db_path=db_path)
+
+
+def test_update_goal_rename_rejects_reserved_name_list(tmp_path):
+    db_path = tmp_path / "test.db"
+    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    with pytest.raises(goals.GoalError):
+        goals.update_goal("Learn Rust", "name", "list", db_path=db_path)
+
+
 def test_find_goal_by_id(tmp_path):
     db_path = tmp_path / "test.db"
     goal = goals.add_goal("Learn Rust", 20, db_path=db_path)
