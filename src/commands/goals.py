@@ -182,12 +182,21 @@ def _handle_list(options: list[str]) -> None:
 
     active = [g for g in all_goals if g.active]
     inactive = [g for g in all_goals if not g.active]
+    widths = _shared_column_widths(all_goals) if active and inactive else None
 
     if active:
-        render(_build_goal_table("Active:", active, include_priority=True))
+        render(
+            _build_goal_table("Active:", active, include_priority=True, widths=widths)
+        )
 
     if inactive:
-        render(_build_goal_table("Inactive:", inactive, include_priority=False))
+        if active:
+            print_cli("", 0)
+        render(
+            _build_goal_table(
+                "Inactive:", inactive, include_priority=False, widths=widths
+            )
+        )
 
     if archived_goals:
         table = Table(title="Archived:", title_style=PRIMARY_STYLE, box=None)
@@ -199,14 +208,44 @@ def _handle_list(options: list[str]) -> None:
         render(table)
 
 
+class _ColumnWidths(NamedTuple):
+    id: int
+    name: int
+    hours: int
+
+
+def _format_hours_text(goal: Goal) -> str:
+    return (
+        f"{goal.spent_hours:.2f}h / {goal.hours:.2f}h "
+        f"({goal.remaining_hours:.2f}h left)"
+    )
+
+
+def _shared_column_widths(goals_list: list[Goal]) -> _ColumnWidths:
+    """ID/Name/Hours widths shared across the Active and Inactive tables so
+    their columns line up vertically, even though each table only shows a
+    subset of goals and would otherwise auto-size independently."""
+    return _ColumnWidths(
+        id=max(len("ID"), *(len(str(g.id)) for g in goals_list)),
+        name=max(len("Name"), *(len(g.name) for g in goals_list)),
+        hours=max(len("Hours"), *(len(_format_hours_text(g)) for g in goals_list)),
+    )
+
+
 def _build_goal_table(
-    title: str, goals_list: list[Goal], *, include_priority: bool
+    title: str,
+    goals_list: list[Goal],
+    *,
+    include_priority: bool,
+    widths: _ColumnWidths | None = None,
 ) -> Table:
     table = Table(title=title, title_style=PRIMARY_STYLE, box=None)
-    table.add_column("ID", style=MUTED_STYLE, justify="right")
-    table.add_column("Name", style=PRIMARY_STYLE)
+    table.add_column(
+        "ID", style=MUTED_STYLE, justify="right", width=widths.id if widths else None
+    )
+    table.add_column("Name", style=PRIMARY_STYLE, width=widths.name if widths else None)
     table.add_column("Progress")
-    table.add_column("Hours", style=MUTED_STYLE)
+    table.add_column("Hours", style=MUTED_STYLE, width=widths.hours if widths else None)
     if include_priority:
         table.add_column("Pri", style=MUTED_STYLE, justify="center")
     table.add_column("Pace", style=MUTED_STYLE)
@@ -214,11 +253,12 @@ def _build_goal_table(
     for goal in goals_list:
         completed = min(goal.spent_hours, goal.hours) if goal.hours > 0 else 0.0
         bar = ProgressBar(total=goal.hours or 1.0, completed=completed, width=18)
-        hours_text = (
-            f"{goal.spent_hours:.2f}h / {goal.hours:.2f}h "
-            f"({goal.remaining_hours:.2f}h left)"
-        )
-        row: list[RenderableType] = [str(goal.id), goal.name, bar, hours_text]
+        row: list[RenderableType] = [
+            str(goal.id),
+            goal.name,
+            bar,
+            _format_hours_text(goal),
+        ]
         if include_priority:
             row.append(str(goal.priority) if goal.priority else "")
         row.append(_format_pace(goal))

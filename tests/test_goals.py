@@ -488,6 +488,44 @@ def test_handle_list_shows_active_and_inactive_sections(monkeypatch, capsys, tmp
     assert "0.00h / 10.00h (10.00h left)" in inactive_line
 
 
+def test_handle_list_has_gap_between_active_and_inactive_sections(
+    monkeypatch, capsys, tmp_path
+):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(30), db_path=db_path)
+    goals.activate_goal("Learn Rust", db_path=db_path)
+    goals.add_goal("Learn Go", 10, _days_from_now(30), db_path=db_path)
+
+    goals.handle(["list"])
+    captured = capsys.readouterr()
+
+    active_idx = captured.out.index("Active:")
+    inactive_idx = captured.out.index("Inactive:")
+    between = captured.out[active_idx:inactive_idx]
+    assert "\n\n" in between
+
+
+def test_handle_list_aligns_active_and_inactive_columns(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    goals.add_goal("Test", 1, _days_from_now(30), db_path=db_path)
+    goals.activate_goal("Test", db_path=db_path)
+    goals.add_goal(
+        "A much longer inactive goal name", 10, _days_from_now(30), db_path=db_path
+    )
+
+    goals.handle(["list"])
+    captured = capsys.readouterr()
+
+    lines = captured.out.splitlines()
+    active_header = next(line for line in lines if "ID" in line and "Pri" in line)
+    inactive_header = next(line for line in lines if "ID" in line and "Pri" not in line)
+
+    assert active_header.index("Progress") == inactive_header.index("Progress")
+    assert active_header.index("Hours") == inactive_header.index("Hours")
+
+
 def test_handle_list_shows_archived_section(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
     monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
