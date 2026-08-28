@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
@@ -258,11 +259,28 @@ def test_run_countdown_render_fn_receives_paused_state():
 
 def _seed_session(conn, goal_id, days_ago, status="completed", focused_seconds=60):
     started = (datetime.now(UTC) - timedelta(days=days_ago)).isoformat()
-    conn.execute(
+    cursor = conn.execute(
         "INSERT INTO sessions (goal_id, planned_minutes, started_at, status, "
         "focused_seconds) VALUES (?, 25, ?, ?, ?)",
         (goal_id, started, status, focused_seconds),
     )
+    return cursor.lastrowid
+
+
+def _seed_log(conn, session_id, content="did stuff"):
+    now = datetime.now(UTC).isoformat()
+    conn.execute(
+        "INSERT INTO logs (session_id, content, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?)",
+        (session_id, content, now, now),
+    )
+
+
+def _seed_qualifying_day(conn, goal_id, days_ago, focused_seconds=900):
+    """A day that should count toward the streak under the new rules:
+    logged, and >= 15 focused minutes."""
+    session_id = _seed_session(conn, goal_id, days_ago, focused_seconds=focused_seconds)
+    _seed_log(conn, session_id)
 
 
 def test_current_streak_days_zero_when_no_sessions(tmp_path):
@@ -275,7 +293,7 @@ def test_current_streak_days_counts_consecutive_days_including_today(tmp_path):
     goal = _add_active_goal(db_path)
     conn = sqlite3.connect(db_path)
     for days_ago in (0, 1, 2):
-        _seed_session(conn, goal.id, days_ago)
+        _seed_qualifying_day(conn, goal.id, days_ago)
     conn.commit()
     conn.close()
 
@@ -287,7 +305,7 @@ def test_current_streak_days_continues_through_missed_today(tmp_path):
     goal = _add_active_goal(db_path)
     conn = sqlite3.connect(db_path)
     for days_ago in (1, 2):
-        _seed_session(conn, goal.id, days_ago)
+        _seed_qualifying_day(conn, goal.id, days_ago)
     conn.commit()
     conn.close()
 
@@ -299,7 +317,7 @@ def test_current_streak_days_stops_at_gap(tmp_path):
     goal = _add_active_goal(db_path)
     conn = sqlite3.connect(db_path)
     for days_ago in (0, 2):  # gap at day 1
-        _seed_session(conn, goal.id, days_ago)
+        _seed_qualifying_day(conn, goal.id, days_ago)
     conn.commit()
     conn.close()
 
@@ -310,11 +328,100 @@ def test_current_streak_days_ignores_zero_focus_sessions(tmp_path):
     db_path = tmp_path / "test.db"
     goal = _add_active_goal(db_path)
     conn = sqlite3.connect(db_path)
-    _seed_session(conn, goal.id, 0, status="cancelled", focused_seconds=0)
+    session_id = _seed_session(conn, goal.id, 0, status="cancelled", focused_seconds=0)
+    _seed_log(conn, session_id)
     conn.commit()
     conn.close()
 
     assert tracking_data.current_streak_days(db_path) == 0
+
+
+def test_current_streak_days_sums_focused_seconds_across_sessions_same_day(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    _seed_session(conn, goal.id, 0, focused_seconds=500)  # unlogged, alone < 15 min
+    logged_id = _seed_session(conn, goal.id, 0, focused_seconds=500)
+    _seed_log(conn, logged_id)  # combined 1000s >= 900s, and the day has a log
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 1
+
+
+def test_current_streak_days_requires_a_log_entry(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    _seed_session(conn, goal.id, 0, focused_seconds=900)  # no log
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 0
+
+
+def test_current_streak_days_requires_15_minutes_total(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = _add_active_goal(db_path)
+    conn = sqlite3.connect(db_path)
+    session_id = _seed_session(conn, goal.id, 0, focused_seconds=300)  # 5 min
+    _seed_log(conn, session_id)
+    conn.commit()
+    conn.close()
+
+    assert tracking_data.current_streak_days(db_path) == 0
+
+
+def test_upsert_log_inserts_new_row(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+
+    tracking_data.upsert_log(session.id, "read chapter 3", db_path=db_path)
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT session_id, content, created_at, updated_at FROM logs "
+        "WHERE session_id = ?",
+        (session.id,),
+    ).fetchone()
+    conn.close()
+    assert row[0] == session.id
+    assert row[1] == "read chapter 3"
+    assert row[2] is not None
+    assert row[3] is not None
+
+
+def test_upsert_log_rejects_missing_session(tmp_path):
+    db_path = tmp_path / "test.db"
+    with pytest.raises(tracking.TrackError):
+        tracking_data.upsert_log(999, "read chapter 3", db_path=db_path)
+
+
+def test_upsert_log_overwrites_existing_row_for_same_session(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking_data.upsert_log(session.id, "read chapter 3", db_path=db_path)
+
+    conn = sqlite3.connect(db_path)
+    original_created_at = conn.execute(
+        "SELECT created_at FROM logs WHERE session_id = ?", (session.id,)
+    ).fetchone()[0]
+    conn.close()
+
+    tracking_data.upsert_log(session.id, "actually chapter 4", db_path=db_path)
+
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        "SELECT content, created_at, updated_at FROM logs WHERE session_id = ?",
+        (session.id,),
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 1
+    content, created_at, _updated_at = rows[0]
+    assert content == "actually chapter 4"
+    assert created_at == original_created_at
 
 
 def test_pause_session_marks_paused(tmp_path):
@@ -417,6 +524,8 @@ def test_handle_help_shows_usage(capsys):
     captured = capsys.readouterr()
     assert "track <goal_name>" in captured.out
     assert "track help" in captured.out
+    assert "track log" in captured.out
+    assert "track list" in captured.out
 
 
 def test_handle_start_rejects_missing_goal(monkeypatch, capsys, tmp_path):
@@ -458,6 +567,7 @@ def test_handle_start_runs_countdown_to_completion(monkeypatch, capsys, tmp_path
 
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
     tracking.handle(["Learn", "Rust", "0.02"])
 
     captured = capsys.readouterr()
@@ -472,6 +582,30 @@ def test_handle_start_runs_countdown_to_completion(monkeypatch, capsys, tmp_path
     assert status == "completed"
 
 
+def test_handle_start_prompts_for_log_on_natural_completion(
+    monkeypatch, capsys, tmp_path
+):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+
+    monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+    monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda: "read chapter 3")
+
+    tracking.handle(["Learn", "Rust", "0.02"])
+
+    conn = sqlite3.connect(db_path)
+    session_id, content = conn.execute(
+        "SELECT sessions.id, logs.content FROM sessions "
+        "JOIN logs ON logs.session_id = sessions.id"
+    ).fetchone()
+    conn.close()
+    assert content == "read chapter 3"
+    assert session_id is not None
+
+
 def test_handle_start_accepts_preset_name(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
     monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
@@ -480,6 +614,7 @@ def test_handle_start_accepts_preset_name(monkeypatch, capsys, tmp_path):
 
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
     tracking.handle(["Learn", "Rust", "short"])
 
     captured = capsys.readouterr()
@@ -504,6 +639,7 @@ def test_handle_start_ctrl_c_has_no_bell_or_completion_banner(
 
     monkeypatch.setattr(tracking.time, "sleep", _raise)
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
     tracking.handle(["Learn", "Rust", "25"])
 
     captured = capsys.readouterr()
@@ -522,6 +658,7 @@ def test_handle_start_ctrl_c_cancels_session(monkeypatch, capsys, tmp_path):
 
     monkeypatch.setattr(tracking.time, "sleep", _raise)
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
     tracking.handle(["Learn", "Rust", "25"])
 
     captured = capsys.readouterr()
@@ -544,6 +681,7 @@ def test_handle_start_quit_key_cancels_session_with_summary(
     keys = iter(["q"])
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: next(keys))
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
 
     tracking.handle(["Learn", "Rust", "0.05"])
 
@@ -557,6 +695,144 @@ def test_handle_start_quit_key_cancels_session_with_summary(
     assert status == "cancelled"
 
 
+def test_handle_start_prompts_for_log_on_early_stop(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+
+    keys = iter(["q"])
+    monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: next(keys))
+    monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+    monkeypatch.setattr("builtins.input", lambda: "stopped partway")
+
+    tracking.handle(["Learn", "Rust", "0.05"])
+
+    conn = sqlite3.connect(db_path)
+    content = conn.execute("SELECT content FROM logs").fetchone()[0]
+    conn.close()
+    assert content == "stopped partway"
+
+
+def test_handle_start_skips_log_when_prompt_answer_is_empty(
+    monkeypatch, capsys, tmp_path
+):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+
+    monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+    monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
+
+    tracking.handle(["Learn", "Rust", "0.02"])
+
+    conn = sqlite3.connect(db_path)
+    count = conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
+    conn.close()
+    assert count == 0
+
+
+def test_list_sessions_returns_all_with_joined_log_content(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    logged = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    unlogged = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking_data.upsert_log(logged.id, "read chapter 3", db_path=db_path)
+
+    sessions = tracking_data.list_sessions(db_path=db_path)
+
+    by_id = {session.id: session for session in sessions}
+    assert len(sessions) == 2
+    assert by_id[logged.id].log_content == "read chapter 3"
+    assert by_id[unlogged.id].log_content is None
+
+
+def test_list_sessions_filters_by_goal_id(tmp_path):
+    db_path = tmp_path / "test.db"
+    rust = _add_active_goal(db_path, name="Learn Rust")
+    goals.add_goal("Side Project", 5, db_path=db_path)
+    goals.activate_goal("Side Project", db_path=db_path)
+    tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.start_session("Side Project", 25, db_path=db_path)
+
+    sessions = tracking_data.list_sessions(goal_id=rust.id, db_path=db_path)
+
+    assert len(sessions) == 1
+    assert sessions[0].goal_name == "Learn Rust"
+
+
+def test_handle_list_renders_all_sessions(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+    logged = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking_data.upsert_log(logged.id, "read chapter 3", db_path=db_path)
+
+    tracking.handle(["list"])
+    all_output = capsys.readouterr().out
+    tracking.handle(["list", "all"])
+    all_variant_output = capsys.readouterr().out
+
+    for output in (all_output, all_variant_output):
+        assert "Learn Rust" in output
+        assert "read chapter 3" in output
+        assert "no log yet" in output
+
+
+def test_handle_list_filters_by_goal_name(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path, name="Learn Rust")
+    goals.add_goal("Side Project", 5, db_path=db_path)
+    goals.activate_goal("Side Project", db_path=db_path)
+    tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking.start_session("Side Project", 25, db_path=db_path)
+
+    tracking.handle(["list", "Learn", "Rust"])
+
+    output = capsys.readouterr().out
+    assert "Learn Rust" in output
+    assert "Side Project" not in output
+
+
+def test_handle_list_rejects_unknown_goal(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+
+    tracking.handle(["list", "Nonexistent"])
+
+    assert "No goal 'Nonexistent' found" in capsys.readouterr().out
+
+
+def test_handle_list_formats_started_at_readably(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+    tracking.start_session("Learn Rust", 25, db_path=db_path)
+
+    tracking.handle(["list"])
+
+    output = capsys.readouterr().out
+    assert not re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+", output)
+
+
+def test_handle_list_shows_empty_state(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+
+    tracking.handle(["list"])
+
+    assert "No sessions yet" in capsys.readouterr().out
+
+
 def test_handle_start_pause_then_resume_completes(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
     monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
@@ -566,6 +842,7 @@ def test_handle_start_pause_then_resume_completes(monkeypatch, capsys, tmp_path)
     keys = iter(["p", "p", None, None, None])
     monkeypatch.setattr(tracking, "_default_poll_keypress", lambda: next(keys))
     monkeypatch.setattr(tracking.time, "sleep", lambda _: None)
+    monkeypatch.setattr("builtins.input", lambda: "")
 
     tracking.handle(["Learn", "Rust", "0.05"])
 
@@ -579,3 +856,50 @@ def test_handle_start_pause_then_resume_completes(monkeypatch, capsys, tmp_path)
     conn.close()
     assert status == "completed"
     assert paused_seconds == 1
+
+
+def test_handle_log_writes_entry(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    capsys.readouterr()
+
+    tracking.handle(["log", str(session.id), "did", "the", "thing"])
+
+    captured = capsys.readouterr()
+    assert "Logged" in captured.out
+
+    conn = sqlite3.connect(db_path)
+    content = conn.execute(
+        "SELECT content FROM logs WHERE session_id = ?", (session.id,)
+    ).fetchone()[0]
+    conn.close()
+    assert content == "did the thing"
+
+
+def test_handle_log_rejects_missing_args(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: tmp_path / "test.db")
+
+    tracking.handle(["log"])
+    assert "Usage: track log" in capsys.readouterr().out
+
+    tracking.handle(["log", "1"])
+    assert "Usage: track log" in capsys.readouterr().out
+
+
+def test_handle_log_rejects_non_numeric_session_id(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: tmp_path / "test.db")
+
+    tracking.handle(["log", "abc", "did", "the", "thing"])
+
+    assert "[error]" in capsys.readouterr().out
+
+
+def test_handle_log_rejects_missing_session(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: tmp_path / "test.db")
+
+    tracking.handle(["log", "999", "did", "the", "thing"])
+
+    assert "No session with id 999" in capsys.readouterr().out

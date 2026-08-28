@@ -1,6 +1,6 @@
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from commands import db
@@ -21,6 +21,7 @@ class Session:
     status: str = "running"
     id: int | None = None
     focused_seconds: int | None = None
+    log_content: str | None = None
 
 
 def sessions_db_path() -> Path:
@@ -225,22 +226,93 @@ def cancel_session(
     return session
 
 
+def list_sessions(
+    goal_id: int | None = None, db_path: Path | None = None
+) -> list[Session]:
+    query = (
+        "SELECT sessions.id, goal_id, goals.name, planned_minutes, "
+        "started_at, ended_at, paused_seconds, status, focused_seconds, "
+        "logs.content FROM sessions "
+        "JOIN goals ON goals.id = sessions.goal_id "
+        "LEFT JOIN logs ON logs.session_id = sessions.id "
+    )
+    params: tuple[int, ...] = ()
+    if goal_id is not None:
+        query += "WHERE sessions.goal_id = ? "
+        params = (goal_id,)
+    query += "ORDER BY sessions.id"
+
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(query, params).fetchall()
+    finally:
+        conn.close()
+
+    sessions = []
+    for row in rows:
+        session = _row_to_session(row)
+        session.log_content = row[9]
+        sessions.append(session)
+    return sessions
+
+
+def upsert_log(session_id: int, content: str, db_path: Path | None = None) -> None:
+    conn = _connect(db_path)
+    try:
+        session_row = conn.execute(
+            "SELECT id FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if session_row is None:
+            raise TrackError(f"No session with id {session_id}.")
+
+        now = datetime.now(UTC).isoformat()
+        conn.execute(
+            "INSERT INTO logs (session_id, content, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET content = excluded.content, "
+            "updated_at = excluded.updated_at",
+            (session_id, content, now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+_STREAK_MIN_FOCUSED_SECONDS = 900  # 15 minutes
+
+
 def current_streak_days(db_path: Path | None = None) -> int:
-    """Consecutive calendar days (UTC) with at least one focused session.
+    """Consecutive calendar days (UTC) that qualify for the streak: the
+    "cat stays hungry" mechanic -- a day only counts if it has at least one
+    logged session AND >= 15 focused minutes total across that day's
+    sessions (a daily total, not a single session's minimum).
 
     A missed *today* doesn't break the streak until the day actually ends --
-    it's counted from yesterday backward if today has no session yet.
+    it's counted from yesterday backward if today has no qualifying day yet.
     """
     conn = _connect(db_path)
     try:
         rows = conn.execute(
-            "SELECT started_at FROM sessions "
-            "WHERE status IN ('completed', 'cancelled') AND focused_seconds > 0"
+            "SELECT sessions.started_at, sessions.focused_seconds, logs.id "
+            "FROM sessions LEFT JOIN logs ON logs.session_id = sessions.id "
+            "WHERE sessions.status IN ('completed', 'cancelled')"
         ).fetchall()
     finally:
         conn.close()
 
-    active_dates = {datetime.fromisoformat(row[0]).date() for row in rows}
+    focused_by_date: dict[date, int] = {}
+    logged_dates: set[date] = set()
+    for started_at, focused_seconds, log_id in rows:
+        day = datetime.fromisoformat(started_at).date()
+        focused_by_date[day] = focused_by_date.get(day, 0) + (focused_seconds or 0)
+        if log_id is not None:
+            logged_dates.add(day)
+
+    active_dates = {
+        day
+        for day, total_focused in focused_by_date.items()
+        if day in logged_dates and total_focused >= _STREAK_MIN_FOCUSED_SECONDS
+    }
     if not active_dates:
         return 0
 

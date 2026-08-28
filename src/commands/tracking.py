@@ -1,12 +1,15 @@
 import sys
 import time
 from collections.abc import Callable
+from datetime import datetime
 from typing import NamedTuple
 
 from rich.console import Group, NewLine, RenderableType
 from rich.live import Live
 from rich.padding import Padding
 from rich.progress_bar import ProgressBar
+from rich.prompt import Prompt
+from rich.table import Table
 from rich.text import Text
 
 from commands import goals
@@ -16,12 +19,16 @@ from purrsist.output import (
     ICON_PAUSE,
     ICON_PLAY,
     ICON_STOP,
+    ICON_SUCCESS,
     MUTED_STYLE,
+    PRIMARY_STYLE,
     SUCCESS_STYLE,
     WARNING_STYLE,
     make_console,
     print_cli,
     print_help_table,
+    print_muted,
+    render,
 )
 
 from .tracking_data import (
@@ -30,10 +37,12 @@ from .tracking_data import (
     cancel_session,
     complete_session,
     current_streak_days,
+    list_sessions,
     pause_session,
     resume_session,
     sessions_db_path,
     start_session,
+    upsert_log,
 )
 
 __all__ = [
@@ -88,6 +97,10 @@ PRESETS: dict[str, float] = {
 def _format_remaining(seconds_left: int) -> str:
     minutes, seconds = divmod(max(seconds_left, 0), 60)
     return f"{minutes:02d}:{seconds:02d}"
+
+
+def _format_started_at(started_at: str) -> str:
+    return datetime.fromisoformat(started_at).strftime("%Y-%m-%d %H:%M")
 
 
 PAUSE_KEY = "p"
@@ -310,6 +323,8 @@ def _handle_start(options: list[str]) -> None:
         actual_str = _format_remaining(completed.focused_seconds or 0)
         _print_completion_banner(completed.goal_name, actual_str, planned_str)
 
+    _prompt_for_log(session_id)
+
 
 def _print_completion_banner(goal_name: str, actual_str: str, planned_str: str) -> None:
     """Bell + bordered banner on natural completion, distinct from the
@@ -322,6 +337,73 @@ def _print_completion_banner(goal_name: str, actual_str: str, planned_str: str) 
     print_cli(border, 0)
 
 
+def _prompt_for_log(session_id: int) -> None:
+    """Low-friction primary path for #48's upsert_log -- empty input (just
+    Enter) skips silently, no row written. `track log` is the manual
+    fallback for a skipped prompt."""
+    entry = Prompt.ask("  Log what you did (optional)", console=make_console()).strip()
+    if not entry:
+        return
+    upsert_log(session_id, entry)
+
+
+def _handle_log(options: list[str]) -> None:
+    if len(options) < 2:
+        print_cli("[error] Usage: track log <session_id> <text>")
+        return
+
+    session_id_token, *content_tokens = options
+    try:
+        session_id = int(session_id_token)
+    except ValueError:
+        print_cli(f"[error] '{session_id_token}' is not a valid session id.")
+        return
+
+    content = " ".join(content_tokens)
+    try:
+        upsert_log(session_id, content)
+    except TrackError as exc:
+        print_cli(f"[error] {exc}")
+        return
+
+    print_cli(f"{ICON_SUCCESS} Logged session {session_id}.")
+
+
+def _handle_list(options: list[str]) -> None:
+    if not options or options[0].lower() == "all":
+        sessions = list_sessions()
+    else:
+        identifier = " ".join(options)
+        goal = goals.find_goal(identifier)
+        if goal is None:
+            print_cli(f"[error] No goal '{identifier}' found.")
+            return
+        sessions = list_sessions(goal_id=goal.id)
+
+    if not sessions:
+        print_muted("No sessions yet. Start one with 'track <goal_name>'.")
+        return
+
+    table = Table(title="Sessions:", title_style=PRIMARY_STYLE, box=None)
+    table.add_column("ID", style=MUTED_STYLE, justify="right")
+    table.add_column("Goal", style=PRIMARY_STYLE)
+    table.add_column("Started", style=MUTED_STYLE)
+    table.add_column("Status", style=MUTED_STYLE)
+    table.add_column("Focused", style=MUTED_STYLE)
+    table.add_column("Log")
+    for session in sessions:
+        focused = _format_remaining(session.focused_seconds or 0)
+        table.add_row(
+            str(session.id),
+            session.goal_name,
+            _format_started_at(session.started_at),
+            session.status,
+            focused,
+            session.log_content or "no log yet",
+        )
+    render(table)
+
+
 def _handle_help(options: list[str]) -> None:
     print_help_table(
         "track usage:",
@@ -329,6 +411,8 @@ def _handle_help(options: list[str]) -> None:
             f"track <goal_name> [{'|'.join(PRESETS)}|minutes]": (
                 f"Start a timer for a goal (default: pomodoro, {DEFAULT_MINUTES:g} min)"
             ),
+            "track log <session_id> <text>": "Write or overwrite a session's log entry",
+            "track list [all|<name|id>]": "Show sessions (all, or for one goal) with their logs",
             "track help": "Show this help",
         },
     )
@@ -342,6 +426,14 @@ def handle(options: list[str] | None = None) -> None:
 
     if options[0] == "help":
         _handle_help(options[1:])
+        return
+
+    if options[0] == "log":
+        _handle_log(options[1:])
+        return
+
+    if options[0] == "list":
+        _handle_list(options[1:])
         return
 
     _handle_start(options)
