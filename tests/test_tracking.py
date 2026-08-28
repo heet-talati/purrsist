@@ -317,6 +317,58 @@ def test_current_streak_days_ignores_zero_focus_sessions(tmp_path):
     assert tracking_data.current_streak_days(db_path) == 0
 
 
+def test_upsert_log_inserts_new_row(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+
+    tracking_data.upsert_log(session.id, "read chapter 3", db_path=db_path)
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT session_id, content, created_at, updated_at FROM logs "
+        "WHERE session_id = ?",
+        (session.id,),
+    ).fetchone()
+    conn.close()
+    assert row[0] == session.id
+    assert row[1] == "read chapter 3"
+    assert row[2] is not None
+    assert row[3] is not None
+
+
+def test_upsert_log_rejects_missing_session(tmp_path):
+    db_path = tmp_path / "test.db"
+    with pytest.raises(tracking.TrackError):
+        tracking_data.upsert_log(999, "read chapter 3", db_path=db_path)
+
+
+def test_upsert_log_overwrites_existing_row_for_same_session(tmp_path):
+    db_path = tmp_path / "test.db"
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    tracking_data.upsert_log(session.id, "read chapter 3", db_path=db_path)
+
+    conn = sqlite3.connect(db_path)
+    original_created_at = conn.execute(
+        "SELECT created_at FROM logs WHERE session_id = ?", (session.id,)
+    ).fetchone()[0]
+    conn.close()
+
+    tracking_data.upsert_log(session.id, "actually chapter 4", db_path=db_path)
+
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        "SELECT content, created_at, updated_at FROM logs WHERE session_id = ?",
+        (session.id,),
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 1
+    content, created_at, _updated_at = rows[0]
+    assert content == "actually chapter 4"
+    assert created_at == original_created_at
+
+
 def test_pause_session_marks_paused(tmp_path):
     db_path = tmp_path / "test.db"
     _add_active_goal(db_path)

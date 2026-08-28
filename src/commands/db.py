@@ -70,5 +70,16 @@ def connect(path: Path) -> sqlite3.Connection:
     session_columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
     if "focused_seconds" not in session_columns:
         conn.execute("ALTER TABLE sessions ADD COLUMN focused_seconds INTEGER")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL UNIQUE REFERENCES sessions(id),
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
     conn.commit()
     return conn

@@ -225,6 +225,28 @@ def cancel_session(
     return session
 
 
+def upsert_log(session_id: int, content: str, db_path: Path | None = None) -> None:
+    conn = _connect(db_path)
+    try:
+        session_row = conn.execute(
+            "SELECT id FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if session_row is None:
+            raise TrackError(f"No session with id {session_id}.")
+
+        now = datetime.now(UTC).isoformat()
+        conn.execute(
+            "INSERT INTO logs (session_id, content, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET content = excluded.content, "
+            "updated_at = excluded.updated_at",
+            (session_id, content, now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def current_streak_days(db_path: Path | None = None) -> int:
     """Consecutive calendar days (UTC) with at least one focused session.
 
