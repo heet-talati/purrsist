@@ -15,8 +15,8 @@ MODE_LIMITS = {"lock_in": 1, "hardcore": 2, "relaxed": 3}
 DEFAULT_MODE = db.DEFAULT_MODE
 
 # Goal names double as `track <goal_name>` arguments, so a name matching a
-# track subcommand (currently just "help") would be ambiguous at dispatch time.
-_RESERVED_NAMES = {"help"}
+# track subcommand ("help", "log") would be ambiguous at dispatch time.
+_RESERVED_NAMES = {"help", "log"}
 
 
 @dataclass

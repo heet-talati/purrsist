@@ -16,6 +16,7 @@ from purrsist.output import (
     ICON_PAUSE,
     ICON_PLAY,
     ICON_STOP,
+    ICON_SUCCESS,
     MUTED_STYLE,
     SUCCESS_STYLE,
     WARNING_STYLE,
@@ -34,6 +35,7 @@ from .tracking_data import (
     resume_session,
     sessions_db_path,
     start_session,
+    upsert_log,
 )
 
 __all__ = [
@@ -322,6 +324,28 @@ def _print_completion_banner(goal_name: str, actual_str: str, planned_str: str) 
     print_cli(border, 0)
 
 
+def _handle_log(options: list[str]) -> None:
+    if len(options) < 2:
+        print_cli("[error] Usage: track log <session_id> <text>")
+        return
+
+    session_id_token, *content_tokens = options
+    try:
+        session_id = int(session_id_token)
+    except ValueError:
+        print_cli(f"[error] '{session_id_token}' is not a valid session id.")
+        return
+
+    content = " ".join(content_tokens)
+    try:
+        upsert_log(session_id, content)
+    except TrackError as exc:
+        print_cli(f"[error] {exc}")
+        return
+
+    print_cli(f"{ICON_SUCCESS} Logged session {session_id}.")
+
+
 def _handle_help(options: list[str]) -> None:
     print_help_table(
         "track usage:",
@@ -329,6 +353,7 @@ def _handle_help(options: list[str]) -> None:
             f"track <goal_name> [{'|'.join(PRESETS)}|minutes]": (
                 f"Start a timer for a goal (default: pomodoro, {DEFAULT_MINUTES:g} min)"
             ),
+            "track log <session_id> <text>": "Write or overwrite a session's log entry",
             "track help": "Show this help",
         },
     )
@@ -342,6 +367,10 @@ def handle(options: list[str] | None = None) -> None:
 
     if options[0] == "help":
         _handle_help(options[1:])
+        return
+
+    if options[0] == "log":
+        _handle_log(options[1:])
         return
 
     _handle_start(options)

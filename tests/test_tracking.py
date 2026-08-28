@@ -469,6 +469,7 @@ def test_handle_help_shows_usage(capsys):
     captured = capsys.readouterr()
     assert "track <goal_name>" in captured.out
     assert "track help" in captured.out
+    assert "track log" in captured.out
 
 
 def test_handle_start_rejects_missing_goal(monkeypatch, capsys, tmp_path):
@@ -631,3 +632,50 @@ def test_handle_start_pause_then_resume_completes(monkeypatch, capsys, tmp_path)
     conn.close()
     assert status == "completed"
     assert paused_seconds == 1
+
+
+def test_handle_log_writes_entry(monkeypatch, capsys, tmp_path):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
+    monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
+    _add_active_goal(db_path)
+    session = tracking.start_session("Learn Rust", 25, db_path=db_path)
+    capsys.readouterr()
+
+    tracking.handle(["log", str(session.id), "did", "the", "thing"])
+
+    captured = capsys.readouterr()
+    assert "Logged" in captured.out
+
+    conn = sqlite3.connect(db_path)
+    content = conn.execute(
+        "SELECT content FROM logs WHERE session_id = ?", (session.id,)
+    ).fetchone()[0]
+    conn.close()
+    assert content == "did the thing"
+
+
+def test_handle_log_rejects_missing_args(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: tmp_path / "test.db")
+
+    tracking.handle(["log"])
+    assert "Usage: track log" in capsys.readouterr().out
+
+    tracking.handle(["log", "1"])
+    assert "Usage: track log" in capsys.readouterr().out
+
+
+def test_handle_log_rejects_non_numeric_session_id(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: tmp_path / "test.db")
+
+    tracking.handle(["log", "abc", "did", "the", "thing"])
+
+    assert "[error]" in capsys.readouterr().out
+
+
+def test_handle_log_rejects_missing_session(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: tmp_path / "test.db")
+
+    tracking.handle(["log", "999", "did", "the", "thing"])
+
+    assert "No session with id 999" in capsys.readouterr().out
