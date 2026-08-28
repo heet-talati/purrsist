@@ -99,6 +99,20 @@ def test_show_version_rejects_options(capsys):
     assert "Purrsist version" not in captured.out
 
 
+def test_clear_screen(capsys, monkeypatch):
+    monkeypatch.setattr(cli, "clear_console", lambda: None)
+    monkeypatch.setattr(cli.tracking, "current_streak_days", lambda: 0)
+    cli.clear_screen([])
+    captured = capsys.readouterr()
+    assert "Purrsist - Keep at it, don't let Purr down! 😺" in captured.out
+
+
+def test_clear_screen_rejects_options(capsys):
+    cli.clear_screen(["-x"])
+    captured = capsys.readouterr()
+    assert "does not take any options" in captured.out
+
+
 def test_show_help(capsys):
     cli.show_help([])
     captured = capsys.readouterr()

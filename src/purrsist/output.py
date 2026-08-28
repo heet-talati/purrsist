@@ -73,6 +73,22 @@ def render(renderable: RenderableType) -> None:
     _console().print(renderable)
 
 
+def clear_console() -> None:
+    """Wipe the terminal screen, including scrollback; a no-op on non-tty
+    output (piped/redirected/tests).
+
+    Rich's own Console.clear() only sends `ESC[2J` (erase visible screen),
+    which most terminals treat as scrolling old content into scrollback
+    rather than actually clearing it -- so `clear` ends up looking like it
+    just pushed everything up instead of wiping the screen. Adding
+    `ESC[3J` (xterm's "erase saved lines") clears the scrollback too.
+    """
+    if not sys.stdout.isatty():
+        return
+    sys.stdout.write("\x1b[H\x1b[2J\x1b[3J")
+    sys.stdout.flush()
+
+
 def make_console() -> Console:
     """Public accessor for the shared console config, for callers (e.g. a
     Live-driven renderer) that need a Console instance directly rather than

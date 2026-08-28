@@ -2,7 +2,13 @@ from importlib.metadata import version
 
 from commands import goals, tracking
 
-from .output import ICON_STREAK, print_cli, print_help_table, print_panel
+from .output import (
+    ICON_STREAK,
+    clear_console,
+    print_cli,
+    print_help_table,
+    print_panel,
+)
 
 # Global Variables
 APP_VERSION = version("purrsist")
@@ -64,6 +70,13 @@ def show_help(options=None):
     )
 
 
+def clear_screen(options=None):
+    if options_handler(options, "clear"):
+        return
+    clear_console()
+    welcome_message()
+
+
 # Command Registry
 # Maps a command name to its help text and its handler. `exit` has no handler
 # here because repl() breaks out of the loop for it before dispatching.
@@ -73,6 +86,11 @@ COMMANDS = {
         "description": "List available commands",
         "options": {},
         "handler": show_help,
+    },
+    "clear": {
+        "description": "Clear the screen",
+        "options": {},
+        "handler": clear_screen,
     },
     "version": {
         "description": "Show the current version of the program",
