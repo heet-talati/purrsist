@@ -376,6 +376,19 @@ def test_avg_hours_per_day_is_zero_with_no_time_spent(tmp_path):
     assert goal.avg_hours_per_day == 0.0
 
 
+def test_avg_hours_per_day_floors_elapsed_days_at_one_for_brand_new_goal(tmp_path):
+    db_path = tmp_path / "test.db"
+    goal = goals.add_goal("Learn Rust", 10, db_path=db_path)
+    _insert_session(
+        db_path, goal.id, "completed", 72
+    )  # 0.02h, goal created moments ago
+
+    result = goals.list_goals(db_path=db_path)[0]
+    # Without a same-day floor, dividing by a near-zero elapsed-days window
+    # inflates this into an absurd double-digit hours/day pace.
+    assert result.avg_hours_per_day == pytest.approx(0.02, rel=0.01)
+
+
 def test_handle_list_shows_pace_and_projected_completion(monkeypatch, capsys, tmp_path):
     db_path = tmp_path / "test.db"
     monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)

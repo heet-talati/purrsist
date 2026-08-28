@@ -44,8 +44,10 @@ class Goal:
 
     @property
     def avg_hours_per_day(self) -> float:
-        days = self.days_since_created
-        return self.spent_hours / days if days > 0 else 0.0
+        # Floor at 1 day: dividing by a same-day elapsed window (possibly
+        # just seconds old) would inflate this into an absurd rate.
+        days = max(self.days_since_created, 1.0)
+        return self.spent_hours / days
 
 
 def goals_db_path() -> Path:
