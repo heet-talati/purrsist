@@ -136,9 +136,12 @@ class LockInStatus(NamedTuple):
     required_pace: float | None
 
 
+_LOCK_IN_GRACE_DAYS = 1.0
+
+
 def _priority_goal_row(conn: sqlite3.Connection) -> tuple | None:
     return conn.execute(
-        "SELECT id, name, hours, deadline, "
+        "SELECT id, name, hours, deadline, created_at, "
         "COALESCE((SELECT SUM(focused_seconds) FROM sessions "
         "WHERE sessions.goal_id = goals.id "
         "AND sessions.status IN ('completed', 'cancelled')), 0) "
@@ -183,12 +186,19 @@ def refresh_lock_in(db_path: Path | None = None) -> LockInStatus:
         if checked_on == today:
             return LockInStatus(was_locked, row[1] if was_locked else None, None, None)
 
-        goal_id, goal_name, hours, deadline, spent_seconds = row
+        goal_id, goal_name, hours, deadline, created_at, spent_seconds = row
         remaining_hours = hours - spent_seconds / 3600
         recent_pace = required_pace = None
         new_locked = False
 
-        if remaining_hours > 0:
+        days_since_created = (
+            datetime.now(UTC) - datetime.fromisoformat(created_at)
+        ).total_seconds() / 86400
+
+        # A goal activated moments ago hasn't had any real time to fall
+        # behind yet -- skip evaluation for its first day so it doesn't
+        # lock in immediately on activation.
+        if remaining_hours > 0 and days_since_created >= _LOCK_IN_GRACE_DAYS:
             days_left = (date.fromisoformat(deadline) - datetime.now(UTC).date()).days
             required_pace = (
                 remaining_hours / days_left if days_left > 0 else float("inf")
@@ -221,10 +231,17 @@ def refresh_lock_in(db_path: Path | None = None) -> LockInStatus:
     )
 
 
-def unlock(reason: str, db_path: Path | None = None) -> None:
+def unlock(
+    reason: str,
+    field: str | None = None,
+    value: str | None = None,
+    db_path: Path | None = None,
+) -> Goal | None:
     reason = reason.strip()
     if not reason:
         raise GoalError("A reason is required to unlock.")
+    if field is not None and field not in ("hours", "deadline"):
+        raise GoalError(f"Unknown field '{field}'. Choose from: hours, deadline.")
 
     conn = _connect(db_path)
     try:
@@ -234,6 +251,42 @@ def unlock(reason: str, db_path: Path | None = None) -> None:
         if not locked:
             raise GoalError("Not currently locked.")
 
+        updated_goal = None
+        if field is not None:
+            row = _priority_goal_row(conn)
+            if row is None:
+                raise GoalError("No locked goal found to update.")
+            goal_id, goal_name, hours, deadline, _created_at, _spent_seconds = row
+
+            if field == "hours":
+                try:
+                    new_hours = float(value) if value else 0
+                except ValueError:
+                    raise GoalError(
+                        f"'{value}' is not a valid number of hours."
+                    ) from None
+                if new_hours <= 0:
+                    raise GoalError("Hours must be a positive number.")
+                conn.execute(
+                    "UPDATE goals SET hours = ? WHERE id = ?", (new_hours, goal_id)
+                )
+                hours = new_hours
+            else:  # deadline
+                new_deadline = _parse_deadline_token(value.strip()) if value else None
+                if new_deadline is None:
+                    raise GoalError(
+                        f"'{value}' is not a valid deadline (use a day count or YYYY-MM-DD)."
+                    )
+                conn.execute(
+                    "UPDATE goals SET deadline = ? WHERE id = ?",
+                    (new_deadline, goal_id),
+                )
+                deadline = new_deadline
+
+            updated_goal = Goal(
+                id=goal_id, name=goal_name, hours=hours, deadline=deadline
+            )
+
         conn.execute(
             "UPDATE app_settings SET lock_in_locked = 0, lock_in_checked_on = ? "
             "WHERE id = 1",
@@ -242,6 +295,8 @@ def unlock(reason: str, db_path: Path | None = None) -> None:
         conn.commit()
     finally:
         conn.close()
+
+    return updated_goal
 
 
 def add_goal(
@@ -256,6 +311,8 @@ def add_goal(
         raise GoalError(f"'{name}' is a reserved name and can't be used for a goal.")
     if hours <= 0:
         raise GoalError("Hours must be a positive number.")
+    if not deadline:
+        raise GoalError("A deadline is required.")
 
     created_at = datetime.now(UTC).isoformat()
     conn = _connect(db_path)
@@ -491,15 +548,11 @@ def update_goal(
             )
             hours = new_hours
         else:  # deadline
-            if value.strip().lower() == "none":
-                new_deadline = None
-            else:
-                new_deadline = _parse_deadline_token(value.strip())
-                if new_deadline is None:
-                    raise GoalError(
-                        f"'{value}' is not a valid deadline "
-                        "(use a day count, YYYY-MM-DD, or 'none')."
-                    )
+            new_deadline = _parse_deadline_token(value.strip())
+            if new_deadline is None:
+                raise GoalError(
+                    f"'{value}' is not a valid deadline (use a day count or YYYY-MM-DD)."
+                )
             conn.execute(
                 "UPDATE goals SET deadline = ? WHERE id = ?", (new_deadline, goal_id)
             )

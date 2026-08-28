@@ -8,7 +8,7 @@ from commands import goals, goals_data, tracking, tracking_data
 
 
 def _add_active_goal(db_path, name="Learn Rust", hours=20):
-    goals.add_goal(name, hours, db_path=db_path)
+    goals.add_goal(name, hours, _days_from_now(30), db_path=db_path)
     return goals.activate_goal(name, db_path=db_path)
 
 
@@ -66,7 +66,7 @@ def test_start_session_rejects_missing_goal(tmp_path):
 
 def test_start_session_rejects_inactive_goal(tmp_path):
     db_path = tmp_path / "test.db"
-    goals.add_goal("Learn Rust", 20, db_path=db_path)
+    goals.add_goal("Learn Rust", 20, _days_from_now(30), db_path=db_path)
     with pytest.raises(tracking.TrackError):
         tracking.start_session("Learn Rust", 25, db_path=db_path)
 
@@ -545,8 +545,17 @@ def test_handle_start_refuses_non_priority_goal_once_locked(
 
     goals.add_goal("Learn Rust", 20, _days_from_now(2), db_path=db_path)
     goals.activate_goal("Learn Rust", db_path=db_path)
+    # Backdate past the lock-in grace period -- otherwise a goal activated
+    # moments ago never locks in, so this session would actually run.
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE goals SET created_at = ? WHERE name = 'Learn Rust'",
+        ((datetime.now(UTC) - timedelta(days=2)).isoformat(),),
+    )
+    conn.commit()
+    conn.close()
     goals.set_mode("hardcore", db_path=db_path)
-    goals.add_goal("Side Project", 5, db_path=db_path)
+    goals.add_goal("Side Project", 5, _days_from_now(30), db_path=db_path)
     goals.activate_goal("Side Project", db_path=db_path)
     capsys.readouterr()
 
@@ -752,7 +761,7 @@ def test_list_sessions_returns_all_with_joined_log_content(tmp_path):
 def test_list_sessions_filters_by_goal_id(tmp_path):
     db_path = tmp_path / "test.db"
     rust = _add_active_goal(db_path, name="Learn Rust")
-    goals.add_goal("Side Project", 5, db_path=db_path)
+    goals.add_goal("Side Project", 5, _days_from_now(30), db_path=db_path)
     goals.activate_goal("Side Project", db_path=db_path)
     tracking.start_session("Learn Rust", 25, db_path=db_path)
     tracking.start_session("Side Project", 25, db_path=db_path)
@@ -788,7 +797,7 @@ def test_handle_list_filters_by_goal_name(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(tracking_data, "sessions_db_path", lambda: db_path)
     monkeypatch.setattr(goals_data, "goals_db_path", lambda: db_path)
     _add_active_goal(db_path, name="Learn Rust")
-    goals.add_goal("Side Project", 5, db_path=db_path)
+    goals.add_goal("Side Project", 5, _days_from_now(30), db_path=db_path)
     goals.activate_goal("Side Project", db_path=db_path)
     tracking.start_session("Learn Rust", 25, db_path=db_path)
     tracking.start_session("Side Project", 25, db_path=db_path)
