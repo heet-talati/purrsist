@@ -5,6 +5,9 @@
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
+> [!NOTE]
+> _The content and reflections in this README are mine. I wrote the draft and used Claude to polish the wording which was reviewed by me (also why you'll spot the odd — em dash)._
+
 ### A terminal habit-tracker that won't let you quietly abandon what you started.
 
 Purrsist is a local-only CLI: cap your active goals at three, put a real deadline and hour target on each, time your focus sessions against them, and leave a log entry so tomorrow-you knows what happened. Everything lives in one SQLite file — no accounts, no sync, no browser tab.
